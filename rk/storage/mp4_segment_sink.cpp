@@ -46,8 +46,9 @@ std::vector<std::string> list_segments(const std::string& dir) {
   struct dirent* e;
   while ((e = readdir(d)) != nullptr) {
     std::string n(e->d_name);
-    if (n.size() == 20 && n.compare(0, 4, "seg_") == 0 &&
-        n.compare(16, 4, ".mp4") == 0) {
+    // seg_YYYYmmdd_HHMMSS.mp4：前缀+后缀匹配（名字含时间戳，字典序即时间序）
+    if (n.size() > 8 && n.compare(0, 4, "seg_") == 0 &&
+        n.compare(n.size() - 4, 4, ".mp4") == 0) {
       out.push_back(dir + "/" + n);
     }
   }

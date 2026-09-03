@@ -23,18 +23,6 @@
 
 namespace {
 
-// ffprobe 查 format duration，返回 -1 表示失败
-double probe_duration_s(const std::string& file) {
-  std::string cmd = "ffprobe -v error -show_entries format=duration -of csv=p=0 '" + file + "'";
-  FILE* p = popen(cmd.c_str(), "r");
-  if (!p) return -1;
-  char buf[64] = {0};
-  const char* r = fgets(buf, sizeof(buf), p);
-  pclose(p);
-  if (!r) return -1;
-  return strtod(buf, nullptr);
-}
-
 int run_phase_a(const std::string& dir, int count, int seg_seconds, uint32_t watermark,
                 double* out_elapsed, int* out_segments) {
   vox::V4L2Capture::Params cp;
