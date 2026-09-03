@@ -39,6 +39,34 @@ std::string segment_path(const std::string& dir) {
   return dir + "/seg_" + ts + ".mp4";
 }
 
+struct NalRef {
+  const uint8_t* p;
+  size_t len;
+};
+
+// 扫描 Annex-B 装载里的全部 NAL。两个边界细节（都踩过）：
+//   1) 起始码的前导零属于码本身不属于上一个 NAL——尾部零字节一律剔除
+//      （RBSP 结束字节必非零，剔除零安全）；
+//   2) 扫到缓冲区末尾时上一个 NAL 不能被截短（内层循环条件须含等号）。
+std::vector<NalRef> split_annexb(const uint8_t* d, size_t n) {
+  std::vector<NalRef> out;
+  size_t i = 0;
+  while (i + 4 <= n) {  // 起始码后至少 1 字节 NAL 头才有意义
+    if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1) {
+      const size_t start = i + 3;
+      size_t j = start;
+      while (j + 3 <= n && !(d[j] == 0 && d[j + 1] == 0 && d[j + 2] == 1)) ++j;
+      size_t end = (j + 3 <= n) ? j : n;
+      while (end > start && d[end - 1] == 0) --end;
+      if (end > start) out.push_back({d + start, end - start});
+      i = j;
+    } else {
+      ++i;
+    }
+  }
+  return out;
+}
+
 std::vector<std::string> list_segments(const std::string& dir) {
   std::vector<std::string> out;
   DIR* d = opendir(dir.c_str());
@@ -64,30 +92,13 @@ Mp4SegmentSink::Mp4SegmentSink(const Params& p) : params_(p) {}
 Mp4SegmentSink::~Mp4SegmentSink() { stop(); }
 
 std::vector<uint8_t> Mp4SegmentSink::annexb_to_avcc(const std::vector<uint8_t>& ab) {
-  // 拆 NAL：匹配 00 00 01 起始码（兼容 3/4 字节），到下一个起始码为止
-  std::vector<const uint8_t*> nals;
-  std::vector<size_t> lens;
-  size_t i = 0;
-  const size_t n = ab.size();
-  while (i + 3 < n) {
-    if (ab[i] == 0 && ab[i + 1] == 0 && ab[i + 2] == 1) {
-      size_t start = i + 3;
-      size_t j = start;
-      while (j + 3 < n && !(ab[j] == 0 && ab[j + 1] == 0 && ab[j + 2] == 1)) ++j;
-      nals.push_back(ab.data() + start);
-      lens.push_back(j - start);
-      i = j;
-    } else {
-      ++i;
-    }
-  }
   const uint8_t* sps = nullptr;
   const uint8_t* pps = nullptr;
   size_t sps_len = 0, pps_len = 0;
-  for (size_t k = 0; k < nals.size(); ++k) {
-    const uint8_t type = nals[k][0] & 0x1f;
-    if (type == 7 && !sps) { sps = nals[k]; sps_len = lens[k]; }
-    if (type == 8 && !pps) { pps = nals[k]; pps_len = lens[k]; }
+  for (const NalRef& n : split_annexb(ab.data(), ab.size())) {
+    const uint8_t type = n.p[0] & 0x1f;
+    if (type == 7 && !sps) { sps = n.p; sps_len = n.len; }
+    if (type == 8 && !pps) { pps = n.p; pps_len = n.len; }
   }
   if (!sps || !pps || sps_len < 4) {
     VOX_ERROR("extradata 中未找到 SPS/PPS（sps=%p pps=%p）", (void*)sps, (void*)pps);
@@ -241,26 +252,12 @@ void Mp4SegmentSink::on_packet(const EncodedPacket& pkt) {
 
   // MP4 sample 必须是 AVCC（4 字节长度前缀），movenc 不代转 Annex-B——逐 NAL 重写
   scratch_.clear();
-  {
-    const uint8_t* d = pkt.data;
-    const size_t n = pkt.size;
-    size_t i = 0;
-    while (i + 3 < n) {
-      if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1) {
-        const size_t start = i + 3;
-        size_t j = start;
-        while (j + 3 < n && !(d[j] == 0 && d[j + 1] == 0 && d[j + 2] == 1)) ++j;
-        const size_t len = j - start;
-        scratch_.push_back(static_cast<uint8_t>(len >> 24));
-        scratch_.push_back(static_cast<uint8_t>(len >> 16));
-        scratch_.push_back(static_cast<uint8_t>(len >> 8));
-        scratch_.push_back(static_cast<uint8_t>(len));
-        scratch_.insert(scratch_.end(), d + start, d + j);
-        i = j;
-      } else {
-        ++i;
-      }
-    }
+  for (const NalRef& n : split_annexb(pkt.data, pkt.size)) {
+    scratch_.push_back(static_cast<uint8_t>(n.len >> 24));
+    scratch_.push_back(static_cast<uint8_t>(n.len >> 16));
+    scratch_.push_back(static_cast<uint8_t>(n.len >> 8));
+    scratch_.push_back(static_cast<uint8_t>(n.len));
+    scratch_.insert(scratch_.end(), n.p, n.p + n.len);
   }
   if (scratch_.empty()) return;  // 无完整 NAL，丢弃
   avpkt_->data = scratch_.data();
