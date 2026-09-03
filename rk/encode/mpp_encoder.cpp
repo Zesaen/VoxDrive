@@ -234,11 +234,16 @@ bool MppEncoder::encode(const VideoFrame& in, const EncodedPacket** out) {
   pkt_buf_.assign(data, data + len);
   mpp_packet_deinit(&packet);
 
-  // 首个 NAL 类型判断关键帧（Annex-B 起始码 00 00 00 01 后的 NAL header 低 5 位）
+  // 扫描包内全部 NAL 判关键帧（起始码 00 00 01——兼容 3/4 字节；
+  // MPP 的 IDR 包常带前缀 SEI，只看首个 NAL 会漏判）
   bool keyframe = false;
-  if (len >= 5 && pkt_buf_[0] == 0 && pkt_buf_[1] == 0 && pkt_buf_[2] == 0 &&
-      pkt_buf_[3] == 1) {
-    keyframe = (pkt_buf_[4] & 0x1f) == 5;
+  for (size_t i = 0; i + 3 < len; ++i) {
+    if (pkt_buf_[i] == 0 && pkt_buf_[i + 1] == 0 && pkt_buf_[i + 2] == 1) {
+      if ((pkt_buf_[i + 3] & 0x1f) == 5) {
+        keyframe = true;
+        break;
+      }
+    }
   }
   pkt_ = EncodedPacket{};
   pkt_.data = pkt_buf_.data();
