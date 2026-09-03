@@ -86,7 +86,8 @@ docs/                 # 工程文档（部署手册、架构说明、实测记�
 - [x] zmq-comm-kit 通信库上 Jetson 编译验证（REQ/REP + PUB/SUB 回环）
 - [x] Jetson 七服务收编 + 标准重构（统一配置/公共 JSON/毫秒日志/死代码清理；七服务全部板上自测 PASS，`start_core.sh` 一键全栈启动 + `run_regression.sh` 4/4 PASS）
 - [ ] mediamtx RTMP 服务上 Jetson（部署被网络阻塞，见 models_manifest）
-- [ ] RK3588：V4L2 采集 → RGA → MPP 硬编 → MP4 分段循环存储 + RTMP 推流
+- [x] RK3588 硬件链路验证 + 采集层（野火 LubanCat-4/RK3588S + IMX415 MIPI；`IVideoSource`/`IVideoSink` 接口抽象 + `V4L2Capture` mmap/DMA-BUF 实现，NV12 1920x1080 实测 30.0fps 板上自测 PASS）
+- [ ] RK3588：RGA + MPP 硬编 → MP4 分段循环存储 + RTMP 推流
 - [ ] RK ZMQ 服务 + 跨板工具 + dashboard 预览/状态面板
 - [ ] 跨板闭环联调 + 端到端延迟分解实测
 - [ ] 语义双路意图路由、RKNN 事件锁录（规划中）
