@@ -1,0 +1,93 @@
+# 聆行 VoxDrive — 分布式车载智能座舱系统（RK3588 + Jetson Orin 双板）
+
+> 双 SoC 分布式车载智能座舱：**RK3588 作为行车记录媒体节点**（V4L2 摄像头采集 / RGA 图像处理 / MPP 硬件编码 / MP4 分段循环存储 / RTMP 推流），**Jetson Orin 作为端侧 AI 语音节点**（流式 ASR / LLM / RAG / TTS / Qt 座舱界面）。两板以太网互联，视频流走 RTMP、控制与状态走 ZeroMQ，实现"语音控制行车记录、画面预览、录像与存储状态查询"的跨节点完整闭环。
+
+**状态：开发中（WIP）**——Jetson 侧七服务收编自上一代单体语音座舱项目并重构，RK3588 侧行车记录链路开发中。
+
+## 系统架构
+
+```
+[UVC/MIPI 摄像头]
+      │
+      ▼
+RK3588（行车记录媒体节点）
+ V4L2 采集 ──► RGA 转换/缩放 ──► MPP H.264 硬编码(VBR)
+                                     │
+                 ┌───────────────────┴───────────────────┐
+                 ▼                                       ▼
+        Mp4SegmentSink                          RtmpSink（可替换）
+     分段循环存储·水位监控                        RTMP 推流
+     最旧覆盖·断链恢复                                │
+                 │                                   │
+                 └──► RK ZMQ 服务 ◄───────────────────┘
+                      REQ/REP 状态应答 + PUB 异常事件
+                              │ 以太网（控制面 ZMQ / 数据面 RTMP）
+                              ▼
+Jetson Orin（端侧 AI 语音节点）
+  麦克风 ─► ASR ─► Intent Router ─┬► RAG（车辆知识库问答）
+                                  ├► LLM（Qwen2.5 GGUF，llama.cpp 全离线）
+                                  ├► Tool Bus ──► 跨板工具（录像/存储查询、抓拍、预览）
+                                  └► TTS ─► 扬声器
+  Qt Dashboard：座舱状态 + 行车记录画面预览 + 录像/存储面板
+```
+
+**任务划分原则**：数据密集型任务走专用加速器（RK3588 的 VPU/RGA/NPU），模型密集型任务走中心算力（Jetson GPU/统一内存）。
+
+## Jetson 侧服务拓扑与 ZMQ 端口
+
+| 服务 | 语言 | 端点 | 说明 |
+|---|---|---|---|
+| intent_router | C++ | REP `*:6666` / PUB `*:6671` | 意图路由：规则分类，分发到 RAG/LLM/Tool/TTS |
+| rag | Python | REP `*:6667` / PUB→6671 | 车辆手册知识库：向量检索 + Top-K 召回 |
+| llm | Python | REP `*:6668` / PUB→6671 | LLM 代理：对接 llama.cpp server（HTTP :8080），respond/tool_call 两类 JSON |
+| tool_bus | C++ | REP `*:6669` / PUB `*:6670` | 工具总线：车控/传感工具执行，预留跨板工具类 |
+| tts | C++ | REP `*:7777` `*:6677` / PUB `*:6678` | 语音合成（SummerTTS/VITS）+ 三端口握手防回灌 |
+| asr | C++ | REQ→6666/6677 | 流式识别（sherpa-onnx zipformer 双语） |
+| dashboard | Python | SUB 6670/6671 · REQ 6669 | PyQt5 数字座舱界面（面板插槽化，预留视频预览面板） |
+
+统一消息信封：`{version, type, timestamp, source, payload}`——新增数据类型（GPS/IMU/检测事件…）只需扩展 `type`，不改协议。
+
+## 仓库结构
+
+```
+jetson/               # Jetson 侧（七服务 + 公共模块 + 编排脚本）
+  config/             # voxdrive.conf 统一配置（端口/路径/超时，集中管理）
+  common/             # C++/Python 公共：配置读取·毫秒时间戳日志·JSON·消息信封
+  services/           # asr / intent_router / rag / llm / tool_bus / tts
+  dashboard/          # PyQt5 座舱界面
+  scripts/            # 增量送板·板上编译·自测·启动编排·回归
+rk/                   # RK3588 侧行车记录链路（IVideoSource/IVideoSink 接口化设计）
+docs/                 # 工程文档（部署手册、架构说明、实测记录）
+```
+
+## 构建与部署
+
+- Jetson 侧：`jetson/scripts/build_on_board.sh <service>`（板上原生编译），启动编排与健康检查见 `jetson/scripts/start_core.sh`。
+- RK 侧：板端编译（细节随阶段 C 补充）。
+- 模型文件不入库，按 `models_manifest.md`（本地维护）清单部署到板。
+
+## 实测数据
+
+> 以下表格在对应链路完成后以实测填入，无实测不填。
+
+| 指标 | 数值 | 测量方法 | 状态 |
+|---|---|---|---|
+| LLM 生成速度（Qwen2.5-1.5B Q4_K_M, Jetson Orin） | 待实测 | llama-server /metrics | 迁移中 |
+| 1080p 采集→编码帧率 | 待实测 | 帧计数打点 | 未开始 |
+| RTMP 推流码率 | 待实测 | mediamtx 统计 | 未开始 |
+| 语音端到端延迟（ASR→TTS 播报结束） | 待实测 | 毫秒日志打点对账 | 未开始 |
+| 跨板查询往返延迟 | 待实测 | 毫秒日志打点对账 | 未开始 |
+
+## Roadmap
+
+- [x] zmq-comm-kit 通信库上 Jetson 编译验证（REQ/REP + PUB/SUB 回环）
+- [ ] Jetson 七服务收编 + 标准重构（配置统一/公共 JSON 模块/毫秒日志/死代码清理）
+- [ ] mediamtx RTMP 服务上 Jetson
+- [ ] RK3588：V4L2 采集 → RGA → MPP 硬编 → MP4 分段循环存储 + RTMP 推流
+- [ ] RK ZMQ 服务 + 跨板工具 + dashboard 预览/状态面板
+- [ ] 跨板闭环联调 + 端到端延迟分解实测
+- [ ] 语义双路意图路由、RKNN 事件锁录（规划中）
+
+## License
+
+MIT

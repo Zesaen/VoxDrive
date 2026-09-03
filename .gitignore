@@ -1,0 +1,52 @@
+# ================= 内部资料（绝不入公开仓库）=================
+AGENTS.md
+.agents/
+.zcode/
+描述.txt
+models_manifest.md
+docs/internal/
+*.local.md
+
+# ================= 模型与权重（板上部署，走 manifest 管理）=================
+*.gguf
+*.onnx
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.rknn
+*.npy
+*.pkl
+
+# ================= 构建产物 =================
+build/
+out/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.o
+*.so
+*.so.*
+*.a
+*.dll
+*.exe
+
+# ================= 大型第三方库（vendored，板上另行部署）=================
+**/llama.cpp/
+**/sherpa-onnx/
+**/eigen-*/
+
+# ================= Python =================
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# ================= 日志与临时文件 =================
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
