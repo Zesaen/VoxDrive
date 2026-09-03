@@ -16,7 +16,8 @@ ssh "$BOARD" "set -e
   cmake --build . -j\$(nproc) >/dev/null"
 
 echo "[selftest:tool_bus] 拉起服务并断言"
-ssh "$BOARD" "/usr/bin/python3 - '$SVC_DIR/build/tool_bus'" <<'PYEOF'
+ssh "$BOARD" "pkill -f '$SVC_DIR/build/tool_bus' 2>/dev/null || true; sleep 0.3"  # 清理上次残留
+ssh "$BOARD" "/usr/bin/python3 -u - '$SVC_DIR/build/tool_bus'" <<'PYEOF'
 import json
 import signal
 import subprocess
@@ -38,9 +39,13 @@ try:
     def call(req_text):
         s = ctx.socket(zmq.REQ)
         s.setsockopt(zmq.RCVTIMEO, 3000)
+        s.setsockopt(zmq.LINGER, 0)
         s.connect("tcp://localhost:6669")
-        s.send_string(req_text)
-        return json.loads(s.recv_string())
+        try:
+            s.send_string(req_text)
+            return json.loads(s.recv_string())
+        finally:
+            s.close()
 
     # 1) 正常工具调用 + 状态变更应答
     r = call('{"tool":"climate_control","action":"set_temp","temp":"22"}')
@@ -50,6 +55,7 @@ try:
     sub = ctx.socket(zmq.SUB)
     sub.setsockopt(zmq.SUBSCRIBE, b"")
     sub.setsockopt(zmq.RCVTIMEO, 3000)
+    sub.setsockopt(zmq.LINGER, 0)
     sub.connect("tcp://localhost:6670")
     r = call('{"tool":"window_control","action":"open_all"}')
     assert r["ok"] is True and r["state"]["window_fl"] == 100, r
@@ -76,8 +82,11 @@ try:
 finally:
     if proc.poll() is None:
         proc.send_signal(signal.SIGTERM)
-        proc.wait(timeout=5)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
     log.close()
-    ctx.term()
+    ctx.destroy()  # 关闭残余 socket 并终止，避免 term() 等待阻塞
 PYEOF
 echo "[selftest:tool_bus] 全部 PASS"
