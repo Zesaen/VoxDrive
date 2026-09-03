@@ -74,11 +74,12 @@ bool RtmpSink::open_output() {
   par->extradata_size = static_cast<int>(avcc_.size());
   vs->time_base = AVRational{1, static_cast<int>(params_.fps)};  // flvenc 写 header 时改为 1/1000
 
-  // 连接与 IO 超时（rw_timeout 通用于 URLContext；timeout 面向 tcp 连接）
+  // 连接与 IO 超时：只设 rw_timeout（URLContext 层通用项，同时约束连接与读写）。
+  // 不设 "timeout"——它会按名字匹配进 rtmp/tcp 子协议选项表，把推送端错误置为
+  // listen 模式（实测：连接变 tcp://…?listen&listen_timeout=… 直接抢绑端口失败）。
   AVDictionary* opts = nullptr;
-  const int64_t t_us = static_cast<int64_t>(params_.connect_timeout_ms) * 1000;
-  av_dict_set_int(&opts, "rw_timeout", t_us, 0);
-  av_dict_set_int(&opts, "timeout", t_us, 0);
+  av_dict_set_int(&opts, "rw_timeout",
+                  static_cast<int64_t>(params_.connect_timeout_ms) * 1000, 0);
   const int io_rc = (f->oformat->flags & AVFMT_NOFILE)
                         ? 0
                         : avio_open2(&f->pb, params_.url.c_str(), AVIO_FLAG_WRITE, nullptr, &opts);
