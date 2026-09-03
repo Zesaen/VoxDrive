@@ -9,7 +9,7 @@ import os
 import pathlib
 import sys
 
-JETSON_ROOT = pathlib.Path(__file__).resolve().parents[1]
+JETSON_ROOT = pathlib.Path(__file__).resolve().parents[2]  # services/rag/ → jetson/
 sys.path.insert(0, str(JETSON_ROOT))
 sys.path.insert(0, str(JETSON_ROOT / "services" / "rag" / "python"))
 
