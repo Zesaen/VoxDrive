@@ -54,11 +54,20 @@ inline std::vector<std::string> candidate_paths(const std::string& explicit_path
   if (!explicit_path.empty()) paths.push_back(explicit_path);
   if (const char* env = std::getenv("VOX_CONF")) paths.push_back(env);
   const std::string d = exe_dir();
-  // services/<svc>/build/tool_bus → jetson/config/voxdrive.conf
+  // jetson 布局：services/<svc>/build/tool_bus → jetson/config/voxdrive.conf
   paths.push_back(d + "/../../../config/voxdrive.conf");
   paths.push_back(d + "/../../config/voxdrive.conf");
   paths.push_back(d + "/config/voxdrive.conf");
   paths.push_back(d + "/voxdrive.conf");
+  // 通用兜底：从 exe 目录逐级向上找（rk/build/apps/test_capture → 仓库根 jetson/config/）
+  std::string dir = d;
+  for (int i = 0; i < 8; ++i) {
+    size_t pos = dir.find_last_of('/');
+    if (pos == std::string::npos || pos == 0) break;
+    dir = dir.substr(0, pos);
+    paths.push_back(dir + "/jetson/config/voxdrive.conf");
+    paths.push_back(dir + "/config/voxdrive.conf");
+  }
   paths.push_back("./config/voxdrive.conf");
   paths.push_back("./voxdrive.conf");
   return paths;
