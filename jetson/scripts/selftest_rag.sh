@@ -25,21 +25,20 @@ server_py = sys.argv[1]
 log = open("/tmp/rag.log", "w")
 proc = subprocess.Popen(["/usr/bin/python3", server_py], stdout=log, stderr=log)
 try:
-    # 模型加载（CPU 加载 SentenceTransformer）需要时间，轮询端口就绪
+    # 模型加载（CPU 加载 SentenceTransformer）需要时间：轮询日志等待 listening
     ctx = zmq.Context()
-    for _ in range(60):
-        time.sleep(1)
+    deadline = time.time() + 90
+    ready = False
+    while time.time() < deadline:
         if proc.poll() is not None:
             sys.exit("rag_server 启动即退出，查看 /tmp/rag.log")
-        try:
-            s = ctx.socket(zmq.REQ)
-            s.setsockopt(zmq.RCVTIMEO, 500)
-            s.setsockopt(zmq.LINGER, 0)
-            s.connect("tcp://localhost:6667")
-            s.close()
-            break
-        except Exception:
-            continue
+        with open("/tmp/rag.log", errors="ignore") as f:
+            if "listening" in f.read():
+                ready = True
+                break
+        time.sleep(1)
+    if not ready:
+        sys.exit("90s 内未见 listening，查看 /tmp/rag.log")
 
     def ask(q):
         s = ctx.socket(zmq.REQ)
