@@ -9,4 +9,4 @@ REMOTE_DIR="${VOX_RK_DIR:-\$HOME/Desktop/VoxDrive/rk}"
 ssh "$BOARD" "cd $REMOTE_DIR && \
   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && \
   cmake --build build -j\$(nproc)"
-echo "build done: $BOARD:VoxDrive/rk/build"
+echo "build done: $BOARD:Desktop/VoxDrive/rk/build"
