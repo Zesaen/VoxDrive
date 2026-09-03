@@ -1,28 +1,37 @@
 # 聆行 VoxDrive — 分布式车载智能座舱系统（RK3588 + Jetson Orin 双板）
 
-> 双 SoC 分布式车载智能座舱：**RK3588 作为行车记录媒体节点**（V4L2 摄像头采集 / RGA 图像处理 / MPP 硬件编码 / MP4 分段循环存储 / RTMP 推流），**Jetson Orin 作为端侧 AI 语音节点**（流式 ASR / LLM / RAG / TTS / Qt 座舱界面）。两板以太网互联，视频流走 RTMP、控制与状态走 ZeroMQ，实现"语音控制行车记录、画面预览、录像与存储状态查询"的跨节点完整闭环。
+> 双 SoC 分布式车载智能座舱：**RK3588 作为行车记录媒体节点**（V4L2 摄像头采集 / MPP 硬件编码 / MP4 分段循环存储 / RTMP 推流），**Jetson Orin 作为端侧 AI 语音节点**（流式 ASR / LLM / RAG / TTS / Qt 座舱界面）。两板以太网互联，视频流走 RTMP、控制与状态走 ZeroMQ，实现"语音控制行车记录、画面预览、录像与存储状态查询"的跨节点闭环。
 
-**状态：开发中（WIP）**——Jetson 侧七服务收编自上一代单体语音座舱项目并重构，RK3588 侧行车记录链路开发中。
+**状态：开发中（WIP）**
+
+- ✅ Jetson 侧：七服务收编自上一代单体语音座舱并完成标准重构，全栈一键启动 + 回归测试 4/4 PASS
+- ✅ RK3588 侧：采集（30.0fps）→ MPP 硬编 → MP4 分段循环存储 → RTMP 推流 → ZMQ 状态/事件服务，全链路板上自测 PASS
+- 🚧 跨板联调：tool_bus 跨板工具、dashboard 预览面板、端到端延迟对账（RTMP 服务器 mediamtx 待部署）
 
 ## 系统架构
 
 ```
-[UVC/MIPI 摄像头]
+[IMX415 摄像头]
+      │ MIPI CSI-2 (4-lane)
+      ▼
+  rkcif ──► rkisp(3A) ──► NV12 (/dev/video11)
       │
       ▼
 RK3588（行车记录媒体节点）
- V4L2 采集 ──► RGA 转换/缩放 ──► MPP H.264 硬编码(VBR)
-                                     │
-                 ┌───────────────────┴───────────────────┐
-                 ▼                                       ▼
-        Mp4SegmentSink                          RtmpSink（可替换）
-     分段循环存储·水位监控                        RTMP 推流
-     最旧覆盖·断链恢复                                │
-                 │                                   │
-                 └──► RK ZMQ 服务 ◄───────────────────┘
-                      REQ/REP 状态应答 + PUB 异常事件
-                              │ 以太网（控制面 ZMQ / 数据面 RTMP）
-                              ▼
+ V4L2 采集 ──NV12 直入──► MPP H.264 硬编码(VBR)
+                              │ 编码帧扇出（IVideoSink）
+                 ┌────────────┴────────────┐
+                 ▼                         ▼
+        Mp4SegmentSink                  RtmpSink
+     MP4 分段循环存储                    RTMP 推流
+     · 段边界只在 I 帧                   · flv 封装
+     · 水位监控·最旧覆盖                 · 断连 I 帧+冷却重连
+     · 写失败断链恢复                    （目的：Jetson mediamtx）
+                 │                         │
+                 └──► recorder_service ◄───┘
+                       │  REQ/REP :6700  状态查询·录像开关
+                       │  PUB    :6701  分段/水位/断流事件
+                       ▼ 以太网（控制面 ZMQ / 数据面 RTMP）
 Jetson Orin（端侧 AI 语音节点）
   麦克风 ─► ASR ─► Intent Router ─┬► RAG（车辆知识库问答）
                                   ├► LLM（Qwen2.5 GGUF，llama.cpp 全离线）
@@ -31,44 +40,156 @@ Jetson Orin（端侧 AI 语音节点）
   Qt Dashboard：座舱状态 + 行车记录画面预览 + 录像/存储面板
 ```
 
-**任务划分原则**：数据密集型任务走专用加速器（RK3588 的 VPU/RGA/NPU），模型密集型任务走中心算力（Jetson GPU/统一内存）。
+**任务划分原则**：数据密集型任务走专用加速器（RK3588 的 VPU/RGA/NPU），模型密集型任务走中心算力（Jetson GPU/统一内存）。主码流 NV12 由 ISP 直出、免格式转换直入 MPP，RGA 不在主链路，预留做子码流缩放与格式适配。
 
-## Jetson 侧服务拓扑与 ZMQ 端口
+## 功能流程
 
-| 服务 | 语言 | 端点 | 说明 |
-|---|---|---|---|
-| intent_router | C++ | REP `*:6666` / PUB `*:6671` | 意图路由：规则分类，分发到 RAG/LLM/Tool/TTS |
-| rag | Python | REP `*:6667` / PUB→6671 | 车辆手册知识库：向量检索 + Top-K 召回 |
-| llm | Python | REP `*:6668` / PUB→6671 | LLM 代理：对接 llama.cpp server（HTTP :8080），respond/tool_call 两类 JSON |
-| tool_bus | C++ | REP `*:6669` / PUB `*:6670` | 工具总线：车控/传感工具执行，预留跨板工具类 |
-| tts | C++ | REP `*:7777` `*:6677` / PUB `*:6678` | 语音合成（SummerTTS/VITS）+ 三端口握手防回灌 |
-| asr | C++ | REQ→6666/6677 | 流式识别（sherpa-onnx zipformer 双语） |
-| dashboard | Python | SUB 6670/6671 · REQ 6669 | PyQt5 数字座舱界面（面板插槽化，预留视频预览面板） |
+### 1. 行车记录管线（RK3588）
 
-统一消息信封：`{version, type, timestamp, source, payload}`——新增数据类型（GPS/IMU/检测事件…）只需扩展 `type`，不改协议。
+```
+IMX415 (RAW Bayer, 4-lane MIPI)
+  └─► rkcif ──► rkisp（3A 统计，rkaiq 引擎按需启用）
+        └─► mainpath /dev/video11 输出 NV12 1920x1080@30fps
+              └─► V4L2Capture：mmap 4 缓冲轮询出队，DMA-BUF 导出
+                    └─► MppEncoder：NV12 直入 MPP 编码 H.264（VBR 4Mbps，GOP 2s）
+                          ├─► Mp4SegmentSink ──► ~/voxdrive_records/seg_YYYYmmdd_HHMMSS.mp4
+                          └─► RtmpSink      ──► rtmp://<mediamtx>/live/dashcam
+```
+
+- **分段循环存储**：段边界严格落在 I 帧（每段独立可解码）；PTS 在段内归零后重采样到 1/90000 时基；`statvfs` 监控磁盘水位，超过阈值（默认 85%）按最旧优先删除已关闭段，**永不删正在写的当前段**；写失败（磁盘满/设备掉线）立即关闭当前段，在下一个 I 帧自动重开新段——长时间录制不中断。
+- **推流与存储互不牵连**：RTMP 断连时推流侧只丢弃非 I 帧，按"I 帧到达 + 冷却期满"节奏重连，录像管线不受影响；两路消费者互为独立实现，均挂在 `IVideoSink` 接口下，可单独启停或替换。
+
+### 2. 状态查询与事件上行（ZMQ 双通道）
+
+所有跨板消息使用统一信封，新增数据类型（GPS/IMU/检测事件…）只需扩展 `type` 字段，不改协议：
+
+```json
+{"version": 1, "type": "status", "timestamp_ms": 1725360000000,
+ "source": "rk.recorder", "payload": {"cmd": "status"}}
+```
+
+**REQ/REP（:6700，控制面）**——Jetson 侧随时查询与控制：
+
+```json
+{"recording": true, "pipeline_fps": 30.0, "frames_encoded": 474, "uptime_s": 15.8,
+ "storage": {"dir": "...", "segments_total": 4, "used_percent": 52.0, "free_gb": 13.9},
+ "rtmp": {"...": "推流状态快照"}}
+```
+
+支持命令：`status`（如上快照）、`set_recording`（录像开关，暂停期间编码照常、仅不落盘）。
+
+**PUB/SUB（:6701，事件面）**——异常实时上行座舱告警：
+
+| 事件 | 触发条件 |
+|---|---|
+| `segment_opened` / `segment_closed` | 分段滚动 |
+| `watermark_deleted` | 磁盘超水位，删除最旧段 |
+| `write_error` | 写失败进入断链恢复 |
+| `capture_timeout` | 采集超时断流（只报首次，防风暴） |
+
+### 3. 语音问答链路（Jetson，全离线）
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Mic as 麦克风
+    participant ASR as asr
+    participant R as intent_router
+    participant L as llm
+    participant T as tool_bus
+    participant S as tts
+
+    Mic->>ASR: portaudio 采集
+    ASR->>R: 流式识别文本（sherpa-onnx zipformer）
+    R->>L: 意图分类后转发（/ 或 RAG 知识库）
+    L-->>R: tool_call JSON（约束两类输出之一）
+    R->>T: 执行工具（车控/传感/跨板录像查询）
+    T-->>R: 工具结果
+    R->>L: 结果回填二次生成
+    L-->>R: respond JSON（自然语言答复）
+    R->>S: 答复文本
+    S->>S: 三端口握手 + 播放期丢帧（防声音回灌麦克风）
+    S->>Mic: ALSA 播报
+```
+
+规则与语义两路意图识别；LLM 输出被约束为 `respond` / `tool_call` 两类 JSON，工具调用走"调用→回填→再生成"两段循环。跨板工具（录像/存储状态查询、抓拍、预览开关）由 tool_bus 经上述 ZMQ 双通道访问 RK 节点，异常事件最终以 dashboard 告警呈现（联调中）。
+
+## 实现方案
+
+### RK3588 侧（`rk/`）
+
+**接口分层**——采集与消费解耦，一帧编码输出可多路扇出：
+
+```cpp
+IVideoSource  { start / stop / acquire / release }      // V4L2Capture 实现
+IVideoSink    { start(sps_pps) / on_packet / stop }      // Mp4SegmentSink、RtmpSink 实现
+EncodedPacket { Annex-B H.264 访问单元 + is_keyframe + 时间戳 }
+```
+
+| 模块 | 实现要点 |
+|---|---|
+| `capture/v4l2_capture` | mplane API；格式以 `G_FMT` 实际协商值为准；`REQBUFS`+`mmap` 4 缓冲、`EXPBUF` 导出 DMA-BUF；分片 `poll` 等待保证停流响应；`STREAMOFF` 安全停止 |
+| `encode/mpp_encoder` | NV12 同制式直入 MPP（零格式转换）；VBR 目标 4Mbps（1.5x/0.5x 上下限）；GOP=fps×2s；`MPP_ENC_GET_EXTRA_INFO` 取 SPS/PPS；关键帧判定扫描包内**全部** NAL（MPP IDR 包带 SEI 前缀，只看首 NAL 会漏判） |
+| `storage/mp4_segment_sink` | libavformat 封装；movenc 不代转 Annex-B——写帧前逐 NAL 转 AVCC 4 字节长度前缀，SPS/PPS 手工组装 avcC extradata；起始码前导零归属、末 NAL 边界两处 off-by-one 用统一扫描器解决（症状是 duration 正常但解码全错，必须逐段解码校验） |
+| `stream/rtmp_sink` | flv over RTMP（libavformat，与 MP4 共用 AVCC 转换）；连接超时/读写超时分离；断连后丢弃非 I 帧，按"I 帧 + 冷却间隔"重连，重连成功即恢复完整可解码流 |
+| `service/recorder_service` | 管线线程（采集→编码→扇出）+ 控制线程（REP 500ms 轮询）分离；状态快照跨线程加锁（帧率 EWMA 平滑）；事件经 ZmqPub 上行；启动就绪用原子量轮询，杜绝"管线未起即判死"竞态 |
+
+**ZMQ 通信**：复用自研 `zmq-comm-kit`（REQ/REP + PUB/SUB 封装，C++），板端直链编译。
+
+### Jetson 侧（`jetson/`）
+
+- **公共地基 `common/`**：`voxdrive.conf` 统一管理全部端口/路径/超时（含 RK 节点地址，网络形态变化不改代码）；`vox_log` 毫秒时间戳日志（延迟对账地基）；`msg_envelope` 跨板消息信封；vendored nlohmann/json。
+- **七服务**：asr（sherpa-onnx 流式 zipformer 双语）、intent_router（规则+语义双路，`respond`/`tool_call` 两类 JSON 约束）、rag（车辆手册向量库，阈值过滤）、llm（llama.cpp server HTTP 代理）、tool_bus（本地车控/传感工具 + 跨板工具注册表预留）、tts（SummerTTS/VITS + 三端口握手 + 播放期丢帧防回灌）、dashboard（PyQt5，面板插槽化，预留视频预览/状态面板）。
+- **编排与回归**：`start_core.sh` 路径无关、全 conf 驱动、按依赖排序启动 + 端口健康检查；`run_regression.sh` 4 条典型查询全链路验证。
+
+### 工程化
+
+- **Git 为唯一真源**：本地提交 → `git archive | ssh tar` 增量送板（只送已提交内容）→ 板上编译自测；测试程序放板上独立目录，不污染项目树。
+- **板端编译**：RK 侧 g++/cmake 板上原生编译，MPP/RGA 用发行版 dev 包；ffmpeg 头文件经 `setup_ffmpeg_headers.sh` 解包到项目前缀（发行版 rkmpp 运行库与官方 dev 包冲突，不可 apt 安装），链接系统运行库。
+- **自测判据硬性化**：每个环节的测试都有 PASS 判据（帧率阈值、逐段全量解码零错误、双通道应答断言），不允许"能跑就算过"。
 
 ## 仓库结构
 
 ```
-jetson/               # Jetson 侧（七服务 + 公共模块 + 编排脚本）
-  config/             # voxdrive.conf 统一配置（端口/路径/超时，集中管理）
-  common/             # C++/Python 公共：配置读取·毫秒时间戳日志·JSON·消息信封
-  services/           # asr / intent_router / rag / llm / tool_bus / tts
-  dashboard/          # PyQt5 座舱界面
-  scripts/            # 增量送板·板上编译·自测·启动编排·回归
-rk/                   # RK3588 侧行车记录链路（IVideoSource/IVideoSink 接口化设计）
-docs/                 # 工程文档（部署手册、架构说明、实测记录）
+jetson/                       # Jetson 侧
+  config/voxdrive.conf        #   统一配置（端口/路径/超时/RK 节点地址）
+  common/                     #   配置读取·毫秒日志·JSON·消息信封（节点无关）
+  services/                   #   asr / intent_router / rag / llm / tool_bus / tts
+  dashboard/                  #   PyQt5 座舱界面
+  scripts/                    #   增量送板·板上编译·自测·启动编排·回归
+rk/                           # RK3588 侧（接口化设计）
+  include/vox/                #   IVideoSource / IVideoSink / NAL 工具
+  capture/ encode/ storage/ stream/ service/
+  apps/                       #   test_capture / test_encode / test_record / test_rtmp / test_recorder_client
+  scripts/                    #   增量送板·板上编译·依赖部署
+docs/                         # 工程文档（补充中）
 ```
 
 ## 构建与部署
 
-- Jetson 侧：`jetson/scripts/build_on_board.sh <service>`（板上原生编译），启动编排与健康检查见 `jetson/scripts/start_core.sh`。
-- RK 侧：板端编译（细节随阶段 C 补充）。
-- 模型文件不入库，按 `models_manifest.md`（本地维护）清单部署到板。
+**RK3588（LubanCat-4 / RK3588S，Ubuntu 22.04）**：
+
+```bash
+rk/scripts/setup_ffmpeg_headers.sh   # ffmpeg 头文件前缀（幂等）
+rk/scripts/setup_zmq_kit.sh          # zmq-comm-kit 拷板编译（PC 端执行）
+rk/scripts/sync_to_rk.sh             # git archive 增量送板（PC 端执行）
+rk/scripts/build_on_rk.sh            # 板上编译
+# 板上自测：apps/ 下 test_capture / test_encode / test_record / test_rtmp / test_recorder_client
+```
+
+**Jetson Orin Nano Super（JetPack 6.x）**：
+
+```bash
+jetson/scripts/build_on_board.sh <service>   # 板上编译单个/全部服务
+jetson/scripts/start_core.sh                 # 一键全栈（依赖排序 + 端口健康检查）
+jetson/scripts/run_regression.sh             # 回归测试
+```
+
+模型文件不入库，按清单部署（LLM/ASR/TTS/embedding 四类约 1.7GB）；mediamtx 等第三方二进制另行部署。
 
 ## 实测数据
 
-> 以下表格在对应链路完成后以实测填入，无实测不填。
+> 全部数字为板上实测，附测量方法；未实测项留空不填。
 
 | 指标 | 数值 | 测量方法 | 状态 |
 |---|---|---|---|
