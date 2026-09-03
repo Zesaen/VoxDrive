@@ -23,12 +23,12 @@
 namespace vox {
 namespace log {
 
-inline int level_no(const char* fallback = "info") {
+inline int level_no() {
   static int cached = [] {
     int no = 1;  // info
     std::string lv;
     if (const char* e = std::getenv("VOX_LOG")) lv = e;
-    if (lv.empty()) lv = fallback;
+    if (lv.empty()) lv = "info";
     if (lv == "debug") no = 0;
     else if (lv == "info") no = 1;
     else if (lv == "warn") no = 2;
