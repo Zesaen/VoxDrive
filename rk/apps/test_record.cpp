@@ -113,7 +113,8 @@ int main(int argc, char** argv) {
     return 1;
   }
   int files_ok = 0;
-  std::string ls = "for f in '" + dir + "'/seg_*.mp4; do d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 \"$f\") || exit 1; echo \"$f $d\"; done";
+  // 每段双校验：ffprobe 时长 + ffmpeg 全量解码（容器时长正常但 sample 损坏必须抓出来）
+  std::string ls = "for f in '" + dir + "'/seg_*.mp4; do d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 \"$f\") || exit 1; ffmpeg -v error -i \"$f\" -f null - || exit 1; echo \"$f $d\"; done";
   FILE* p = popen(ls.c_str(), "r");
   if (!p) {
     std::printf("RECORD_TEST FAIL popen\n");

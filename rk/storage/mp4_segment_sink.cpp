@@ -232,14 +232,39 @@ void Mp4SegmentSink::on_packet(const EncodedPacket& pkt) {
     seg_base_ns_ = pkt.timestamp_ns;
   }
 
-  avpkt_->data = const_cast<uint8_t*>(pkt.data);  // 借用指针，写入在本调用内完成
-  avpkt_->size = static_cast<int>(pkt.size);
   avpkt_->stream_index = vstream_->index;
   avpkt_->flags = pkt.is_keyframe ? AV_PKT_FLAG_KEY : 0;
   // 段内 PTS 从 0 起（Baseline 无 B 帧，dts==pts）
   const AVRational ns_tb{1, 1000000000};
   avpkt_->pts = av_rescale_q(pkt.timestamp_ns - seg_base_ns_, ns_tb, vstream_->time_base);
   avpkt_->dts = avpkt_->pts;
+
+  // MP4 sample 必须是 AVCC（4 字节长度前缀），movenc 不代转 Annex-B——逐 NAL 重写
+  scratch_.clear();
+  {
+    const uint8_t* d = pkt.data;
+    const size_t n = pkt.size;
+    size_t i = 0;
+    while (i + 3 < n) {
+      if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1) {
+        const size_t start = i + 3;
+        size_t j = start;
+        while (j + 3 < n && !(d[j] == 0 && d[j + 1] == 0 && d[j + 2] == 1)) ++j;
+        const size_t len = j - start;
+        scratch_.push_back(static_cast<uint8_t>(len >> 24));
+        scratch_.push_back(static_cast<uint8_t>(len >> 16));
+        scratch_.push_back(static_cast<uint8_t>(len >> 8));
+        scratch_.push_back(static_cast<uint8_t>(len));
+        scratch_.insert(scratch_.end(), d + start, d + j);
+        i = j;
+      } else {
+        ++i;
+      }
+    }
+  }
+  if (scratch_.empty()) return;  // 无完整 NAL，丢弃
+  avpkt_->data = scratch_.data();
+  avpkt_->size = static_cast<int>(scratch_.size());
 
   if (av_interleaved_write_frame(fmt_, avpkt_) < 0) {
     VOX_ERROR("写帧失败（磁盘满/IO 错误），关闭当前段，待下个 I 帧重开（断链恢复）");

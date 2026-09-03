@@ -66,6 +66,7 @@ class Mp4SegmentSink final : public IVideoSink {
   AVFormatContext* fmt_ = nullptr;
   AVStream* vstream_ = nullptr;
   AVPacket* avpkt_ = nullptr;
+  std::vector<uint8_t> scratch_;  // AVCC 转换复用缓冲（on_packet 内部使用）
   int64_t seg_base_ns_ = 0;   // 当前段首帧采集时间戳（段内 PTS 归零基准）
   bool await_keyframe_ = true;  // 段必须从 I 帧开始（含断链恢复后的重开）
   std::string current_path_;
