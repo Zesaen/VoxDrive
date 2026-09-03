@@ -37,7 +37,9 @@ if(NOT EXISTS "${FFMPEG_INC}/libavformat/avformat.h")
   message(FATAL_ERROR "缺少 ffmpeg 头文件：先在板上运行 rk/scripts/setup_ffmpeg_headers.sh")
 endif()
 add_library(vox_storage storage/mp4_segment_sink.cpp)
-target_include_directories(vox_storage PRIVATE ${FFMPEG_INC})
+target_include_directories(vox_storage
+  PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/storage ${VOX_COMMON}
+  PRIVATE ${FFMPEG_INC})
 target_link_libraries(vox_storage PUBLIC
   /usr/lib/aarch64-linux-gnu/libavformat.so.58
   /usr/lib/aarch64-linux-gnu/libavcodec.so.58
