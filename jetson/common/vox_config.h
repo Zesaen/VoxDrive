@@ -59,6 +59,7 @@ inline std::vector<std::string> candidate_paths(const std::string& explicit_path
   paths.push_back(d + "/../../config/voxdrive.conf");
   paths.push_back(d + "/config/voxdrive.conf");
   paths.push_back(d + "/voxdrive.conf");
+  paths.push_back("./config/voxdrive.conf");
   paths.push_back("./voxdrive.conf");
   return paths;
 }

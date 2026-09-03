@@ -10,8 +10,8 @@ REMOTE_DIR="${VOX_REMOTE_DIR:-/home/nvidia/Desktop/VoxDrive/jetson}"
 echo "[selftest:common] C++ 侧"
 ssh "$BOARD" "set -e
   cd '$REMOTE_DIR/common/selftest'
-  g++ -std=c++17 -Wall -I.. selftest_common.cpp -o /tmp/vox_selftest_common
-  /tmp/vox_selftest_common"
+  g++ -std=c++17 -Wall -I.. selftest_common.cpp -o selftest_common
+  ./selftest_common"
 
 echo "[selftest:common] Python 侧"
 ssh "$BOARD" "/usr/bin/python3 - '$REMOTE_DIR'" <<'PYEOF'
