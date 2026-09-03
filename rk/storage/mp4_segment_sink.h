@@ -77,6 +77,7 @@ class Mp4SegmentSink final : public IVideoSink {
   std::vector<uint8_t> scratch_;  // AVCC 转换复用缓冲（on_packet 内部使用）
   int64_t seg_base_ns_ = 0;   // 当前段首帧采集时间戳（段内 PTS 归零基准）
   bool await_keyframe_ = true;  // 段必须从 I 帧开始（含断链恢复后的重开）
+  bool active_ = false;         // start 成功且未 stop（stop 幂等，析构安全重复调用）
   std::string current_path_;
   Stats stats_;
   mutable std::mutex stats_mu_;  // 保护 stats_ 的跨线程快照（写点在管线线程）

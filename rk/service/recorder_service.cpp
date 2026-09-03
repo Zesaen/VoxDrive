@@ -136,6 +136,10 @@ int main(int argc, char** argv) {
 
   // ---- 管线线程 ----
   std::thread pipeline([&]() {
+    struct DoneFlag {  // 任意退出路径（含启动失败）都标记结束
+      std::atomic<bool>& f;
+      ~DoneFlag() { f.store(true); }
+    } done{pipeline_done};
     if (!cap.start()) return;
     vox::MppEncoder::Params ep;
     ep.width = cap.width();
@@ -205,7 +209,10 @@ int main(int argc, char** argv) {
     VOX_INFO("pipeline down");
   });
 
-  if (!pipeline_ok.load()) {  // 等管线起来（或失败退出）
+  // 等管线就绪或启动失败（打开设备/初始化编码器需时，不能即时判定）
+  while (!pipeline_ok.load() && !pipeline_done.load())
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  if (!pipeline_ok.load()) {
     pipeline.join();
     std::printf("RECORDER_SERVICE FAIL pipeline\n");
     return 1;

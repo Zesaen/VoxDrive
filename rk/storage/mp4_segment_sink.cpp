@@ -135,6 +135,7 @@ bool Mp4SegmentSink::start(const std::vector<uint8_t>& sps_pps) {
   avpkt_ = av_packet_alloc();
   if (!avpkt_) return false;
   await_keyframe_ = true;  // 段从 I 帧开始
+  active_ = true;
   VOX_INFO("ready: dir=%s segment=%us watermark=%u%%", params_.dir.c_str(),
            params_.segment_seconds, params_.watermark_percent);
   return true;
@@ -314,6 +315,8 @@ Mp4SegmentSink::Stats Mp4SegmentSink::stats_snapshot() const {
 }
 
 void Mp4SegmentSink::stop() {
+  if (!active_) return;  // 幂等：显式 stop 后析构再调为无操作
+  active_ = false;
   close_segment();
   if (avpkt_) {
     av_packet_free(&avpkt_);
