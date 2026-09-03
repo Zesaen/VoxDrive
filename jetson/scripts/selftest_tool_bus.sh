@@ -58,6 +58,7 @@ try:
     sub.setsockopt(zmq.RCVTIMEO, 3000)
     sub.setsockopt(zmq.LINGER, 0)
     sub.connect("tcp://localhost:6670")
+    time.sleep(0.5)  # 等 SUB 订阅传播（ZMQ 慢加入者），否则错过下一条广播
     r = call('{"tool":"window_control","action":"open_all"}')
     assert r["ok"] is True and r["state"]["window_fl"] == 100, r
     pub_msg = json.loads(sub.recv_string())
