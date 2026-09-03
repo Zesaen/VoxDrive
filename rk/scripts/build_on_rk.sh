@@ -4,7 +4,7 @@
 set -euo pipefail
 
 BOARD="${VOX_RK_BOARD:-lubancat}"
-REMOTE_DIR="${VOX_RK_DIR:-\$HOME/VoxDrive/rk}"
+REMOTE_DIR="${VOX_RK_DIR:-\$HOME/Desktop/VoxDrive/rk}"
 
 ssh "$BOARD" "cd $REMOTE_DIR && \
   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && \

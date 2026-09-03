@@ -1,7 +1,8 @@
 # VoxDrive RK 节点（行车记录媒体节点）构建
 # 板端编译定稿：g++ 11.4 / cmake 3.22，MPP/RGA 头文件随 librockchip-mpp-dev / librga-dev 预装。
-# 目录约定：板上仓库根 = ~/VoxDrive（与仓库结构镜像），公共头文件物理位于 jetson/common/
-#（收编期先建在 Jetson 侧；common 为节点无关代码，Jetson 重连后可整体提升为顶层 common/）。
+# 目录约定：板上仓库根 = ~/Desktop/VoxDrive（与 Jetson 约定一致，目录结构与仓库镜像），
+# 公共头文件物理位于 jetson/common/（收编期先建在 Jetson 侧；common 为节点无关代码，
+# Jetson 重连后可整体提升为顶层 common/）。
 cmake_minimum_required(VERSION 3.10)
 project(voxdrive_rk LANGUAGES CXX)
 

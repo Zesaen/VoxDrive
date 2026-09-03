@@ -6,7 +6,7 @@
 set -euo pipefail
 
 BOARD="${VOX_RK_BOARD:-lubancat}"
-REMOTE_DIR="${VOX_RK_DIR:-\$HOME/VoxDrive}"
+REMOTE_DIR="${VOX_RK_DIR:-\$HOME/Desktop/VoxDrive}"
 PATHSPEC="${1:-rk jetson/common jetson/config}"
 
 # 仓库根（脚本位于 rk/scripts/）
