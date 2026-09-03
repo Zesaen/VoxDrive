@@ -1,0 +1,1 @@
+{"speed": 72, "fuel_percent": 85, "tire_fl": 2.3, "tire_fr": 2.3, "tire_rl": 2.1, "tire_rr": 2.2, "engine_temp": 90, "battery_voltage": 12.6, "odometer": 52380}
