@@ -16,7 +16,8 @@ ssh "$BOARD" "set -e
   cmake --build . -j\$(nproc) >/dev/null"
 
 echo "[selftest:tool_bus] 拉起服务并断言"
-ssh "$BOARD" "pkill -f '$SVC_DIR/build/tool_bus' 2>/dev/null || true; sleep 0.3"  # 清理上次残留
+# 清理上次残留（-x 按进程名精确匹配，避免 -f 匹配到本命令行自身）
+ssh "$BOARD" "pkill -x tool_bus 2>/dev/null || true; sleep 0.3"
 ssh "$BOARD" "/usr/bin/python3 -u - '$SVC_DIR/build/tool_bus'" <<'PYEOF'
 import json
 import signal
