@@ -11,7 +11,7 @@ ssh "$BOARD" "test -d ~/Desktop/VoxDrive/models/embedding" \
   || { echo "[selftest:rag] 缺 models/embedding，先按 models_manifest.md 部署"; exit 1; }
 
 echo "[selftest:rag] 拉起 rag_server 并断言"
-ssh "$BOARD" "pkill -f rag_server.py 2>/dev/null || true; sleep 0.3"
+ssh "$BOARD" "pkill -f '[r]ag_server.py' 2>/dev/null || true; sleep 0.3"
 ssh "$BOARD" "/usr/bin/python3 -u - '$SVC_DIR/rag_server.py'" <<'PYEOF'
 import json
 import signal
