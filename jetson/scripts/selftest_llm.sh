@@ -18,6 +18,11 @@ ssh "$BOARD" '
     MODEL=~/Desktop/VoxDrive/models/qwen2.5-1.5b-q4_k_m.gguf
     test -x $BIN || { echo "缺 llama-server（见 models_manifest.md）"; exit 1; }
     test -f $MODEL || { echo "缺 GGUF（见 models_manifest.md）"; exit 1; }
+    # 大模型加载前清页缓存：Jetson 统一内存下，大文件拷贝后的页缓存会碎片化
+    # NvMap 空间导致 cudaMalloc 失败（NvMap error 12）；drop_caches 无破坏性。
+    # 无免密 sudo 时跳过，失败时按提示手动执行（不在脚本中存口令）
+    sudo -n sh -c "echo 3 > /proc/sys/vm/drop_caches" >/dev/null 2>&1 \
+      || echo "[hint] 无免密 sudo；若模型加载 OOM 请手动执行：sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'"
     GGML_CUDA_NO_VMM=1 nohup $BIN -m $MODEL -ngl 28 -c 2048 --port 8080 \
       >/tmp/llama_server.log 2>&1 &
     echo "[selftest:llm] llama-server 后台启动中"
