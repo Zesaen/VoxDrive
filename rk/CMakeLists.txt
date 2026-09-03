@@ -28,9 +28,27 @@ target_include_directories(vox_encode
          /usr/include/rockchip)
 target_link_libraries(vox_encode PUBLIC rockchip_mpp)
 
+# ---- 存储层（C3/R3）：MP4 封装走 libavformat ----
+# 头文件：官方 4.4.2 dev 包解包到项目前缀（rk/scripts/setup_ffmpeg_headers.sh，不动系统包，
+# 因板上运行库是野火 rkmpp 补丁版、官方 dev 依赖对不上）；链接直接指系统同名 .so（同源 ABI 兼容）。
+set(FFMPEG_DEV "$ENV{HOME}/Desktop/VoxDrive/third_party/ffmpeg-dev")
+set(FFMPEG_INC "${FFMPEG_DEV}/usr/include/aarch64-linux-gnu")
+if(NOT EXISTS "${FFMPEG_INC}/libavformat/avformat.h")
+  message(FATAL_ERROR "缺少 ffmpeg 头文件：先在板上运行 rk/scripts/setup_ffmpeg_headers.sh")
+endif()
+add_library(vox_storage storage/mp4_segment_sink.cpp)
+target_include_directories(vox_storage PRIVATE ${FFMPEG_INC})
+target_link_libraries(vox_storage PUBLIC
+  /usr/lib/aarch64-linux-gnu/libavformat.so.58
+  /usr/lib/aarch64-linux-gnu/libavcodec.so.58
+  /usr/lib/aarch64-linux-gnu/libavutil.so.56)
+
 # ---- 测试程序 ----
 add_executable(test_capture apps/test_capture.cpp)
 target_link_libraries(test_capture vox_capture)
 
 add_executable(test_encode apps/test_encode.cpp)
 target_link_libraries(test_encode vox_capture vox_encode)
+
+add_executable(test_record apps/test_record.cpp)
+target_link_libraries(test_record vox_capture vox_encode vox_storage)
