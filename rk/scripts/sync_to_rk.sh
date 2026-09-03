@@ -18,4 +18,4 @@ fi
 
 ssh "$BOARD" "mkdir -p $REMOTE_DIR"
 git archive HEAD $PATHSPEC | ssh "$BOARD" "tar -x -C $REMOTE_DIR"
-echo "synced [$PATHSPEC] -> $BOARD:VoxDrive"
+echo "synced [$PATHSPEC] -> $BOARD:Desktop/VoxDrive"
