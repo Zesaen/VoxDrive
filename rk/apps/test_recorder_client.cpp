@@ -24,7 +24,7 @@ namespace {
 
 std::string make_req(const std::string& cmd, nlohmann::json extra = {}) {
   nlohmann::json payload{{"cmd", cmd}};
-  payload.merge(std::move(extra));
+  if (!extra.is_null()) payload.merge_patch(std::move(extra));
   return vox::msg::make(vox::msg::kTypeStatus, "test_client", payload).dump();
 }
 
@@ -66,7 +66,7 @@ int main() {
       fps = p["pipeline_fps"];
       VOX_INFO("status: recording=%d fps=%.1f segments=%llu used=%.0f%%",
                p["recording"].get<bool>() ? 1 : 0, fps,
-               p["storage"]["segments_total"].get<uint64_t>(),
+               static_cast<unsigned long long>(p["storage"]["segments_total"].get<uint64_t>()),
                p["storage"].value("used_percent", 0.0));
     } else {
       VOX_ERROR("status 应答不合法: %s", env.dump().c_str());
