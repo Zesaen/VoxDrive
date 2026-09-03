@@ -9,6 +9,8 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -50,8 +52,14 @@ class Mp4SegmentSink final : public IVideoSink {
   void stop() override;
   std::string name() const override { return "mp4_segment"; }
 
-  // 状态查询（C5 ZMQ 服务 / R6 工具上报用）
-  const Stats& stats() const { return stats_; }
+  // 事件回调（on_packet 调用线程内执行，须快速返回）：
+  //   segment_opened / segment_closed / watermark_deleted / write_error
+  // detail 为 JSON 字符串（file / used_percent 等字段）
+  using EventHandler = std::function<void(const char* event, const std::string& detail)>;
+  void set_event_handler(EventHandler h) { handler_ = std::move(h); }
+
+  const Stats& stats() const { return stats_; }          // 仅管线线程内使用
+  Stats stats_snapshot() const;  // 跨线程快照（控制/查询线程用）
 
  private:
   bool open_segment();       // 以墙钟命名新段并写 header
@@ -71,6 +79,8 @@ class Mp4SegmentSink final : public IVideoSink {
   bool await_keyframe_ = true;  // 段必须从 I 帧开始（含断链恢复后的重开）
   std::string current_path_;
   Stats stats_;
+  mutable std::mutex stats_mu_;  // 保护 stats_ 的跨线程快照（写点在管线线程）
+  EventHandler handler_;         // 可选事件回调（C5 PUB 上行）
 };
 
 }  // namespace vox

@@ -45,6 +45,13 @@ target_link_libraries(vox_storage PUBLIC
   /usr/lib/aarch64-linux-gnu/libavcodec.so.58
   /usr/lib/aarch64-linux-gnu/libavutil.so.56)
 
+# ---- 记录仪服务（C5/R5）：zmq-comm-kit 源码编译在 ~/Desktop/VoxDrive/zmq-comm-kit ----
+#（PC 侧执行 rk/scripts/setup_zmq_kit.sh 拷贝源码并板上编译；复制不软链）
+set(ZMQ_KIT "$ENV{HOME}/Desktop/VoxDrive/zmq-comm-kit")
+if(NOT EXISTS "${ZMQ_KIT}/include/ZmqServer.h")
+  message(FATAL_ERROR "缺少 zmq-comm-kit：先在 PC 运行 rk/scripts/setup_zmq_kit.sh")
+endif()
+
 # ---- 测试程序 ----
 add_executable(test_capture apps/test_capture.cpp)
 target_link_libraries(test_capture vox_capture)
@@ -54,3 +61,17 @@ target_link_libraries(test_encode vox_capture vox_encode)
 
 add_executable(test_record apps/test_record.cpp)
 target_link_libraries(test_record vox_capture vox_encode vox_storage)
+
+# ---- 记录仪守护进程 + 服务自测客户端 ----
+add_executable(recorder_service service/recorder_service.cpp)
+target_include_directories(recorder_service PRIVATE ${ZMQ_KIT}/include)
+target_link_libraries(recorder_service vox_capture vox_encode vox_storage
+  ${ZMQ_KIT}/build/libzmq_component.so)
+set_target_properties(recorder_service PROPERTIES
+  BUILD_RPATH "${ZMQ_KIT}/build" INSTALL_RPATH "${ZMQ_KIT}/build")
+
+add_executable(test_recorder_client apps/test_recorder_client.cpp)
+target_include_directories(test_recorder_client PRIVATE ${ZMQ_KIT}/include)
+target_link_libraries(test_recorder_client ${ZMQ_KIT}/build/libzmq_component.so)
+set_target_properties(test_recorder_client PROPERTIES
+  BUILD_RPATH "${ZMQ_KIT}/build" INSTALL_RPATH "${ZMQ_KIT}/build")

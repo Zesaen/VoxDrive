@@ -63,6 +63,13 @@ bool MppEncoder::start() {
   return true;
 }
 
+bool MppEncoder::start(const Params& p) {
+  if (initialized_) return params_.width == p.width && params_.height == p.height;
+  params_ = p;
+  if (params_.stride == 0) params_.stride = params_.width;
+  return start();
+}
+
 void MppEncoder::stop() {
   if (frm_grp_) {
     mpp_buffer_group_put(frm_grp_);

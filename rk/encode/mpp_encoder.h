@@ -36,6 +36,8 @@ class MppEncoder {
   MppEncoder& operator=(const MppEncoder&) = delete;
 
   bool start();
+  // 未启动时可用本重载替换构造参数（管线线程内先拿采集协商结果再定编码参数）
+  bool start(const Params& p);
   void stop();
   bool is_started() const { return initialized_; }
 

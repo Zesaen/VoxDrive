@@ -14,6 +14,7 @@
 #include <ctime>
 #include <filesystem>
 
+#include "json.hpp"
 #include "vox_log.h"
 
 extern "C" {
@@ -179,9 +180,13 @@ bool Mp4SegmentSink::open_segment() {
     fmt_ = nullptr;
     return false;
   }
-  stats_.current_file = current_path_;
+  {
+    std::lock_guard<std::mutex> lk(stats_mu_);
+    stats_.current_file = current_path_;
+  }
   enforce_watermark();  // 每段开启即查水位（与按帧数复查互补，段开始是自然的清理点）
   VOX_INFO("segment open: %s", current_path_.c_str());
+  if (handler_) handler_("segment_opened", nlohmann::json{{"file", current_path_}}.dump());
   return true;
 }
 
@@ -192,10 +197,20 @@ void Mp4SegmentSink::close_segment() {
   avformat_free_context(fmt_);  // 释放流与 extradata
   fmt_ = nullptr;
   vstream_ = nullptr;
-  stats_.segments_written++;
-  stats_.current_file.clear();
+  {
+    std::lock_guard<std::mutex> lk(stats_mu_);
+    stats_.segments_written++;
+    stats_.current_file.clear();
+  }
   VOX_INFO("segment closed: %s（累计 %llu 段）", current_path_.c_str(),
            static_cast<unsigned long long>(stats_.segments_written));
+  if (handler_) {
+    handler_("segment_closed",
+             nlohmann::json{{"file", current_path_},
+                            {"segments_total", stats_.segments_written},
+                            {"bytes_total", stats_.bytes_written}}
+                 .dump());
+  }
 }
 
 void Mp4SegmentSink::enforce_watermark() {
@@ -212,10 +227,21 @@ void Mp4SegmentSink::enforce_watermark() {
     }
     if (segs.empty()) return;
     if (unlink(segs.front().c_str()) != 0) return;
-    stats_.segments_deleted++;
+    uint64_t deleted_total = 0;
+    {
+      std::lock_guard<std::mutex> lk(stats_mu_);
+      deleted_total = ++stats_.segments_deleted;
+    }
     VOX_WARN("磁盘水位 %.0f%% ≥ %u%%，删除最旧段 %s（累计淘汰 %llu）", used_pct,
              params_.watermark_percent, segs.front().c_str(),
-             static_cast<unsigned long long>(stats_.segments_deleted));
+             static_cast<unsigned long long>(deleted_total));
+    if (handler_) {
+      handler_("watermark_deleted",
+               nlohmann::json{{"file", segs.front()},
+                              {"used_percent", used_pct},
+                              {"segments_deleted", deleted_total}}
+                   .dump());
+    }
     if (statvfs(params_.dir.c_str(), &vfs) != 0) return;
   }
 }
@@ -265,15 +291,26 @@ void Mp4SegmentSink::on_packet(const EncodedPacket& pkt) {
 
   if (av_interleaved_write_frame(fmt_, avpkt_) < 0) {
     VOX_ERROR("写帧失败（磁盘满/IO 错误），关闭当前段，待下个 I 帧重开（断链恢复）");
+    if (handler_) {
+      handler_("write_error", nlohmann::json{{"file", current_path_}}.dump());
+    }
     close_segment();
     await_keyframe_ = true;
     return;
   }
-  stats_.frames_written++;
-  stats_.bytes_written += pkt.size;
+  {
+    std::lock_guard<std::mutex> lk(stats_mu_);
+    stats_.frames_written++;
+    stats_.bytes_written += pkt.size;
+  }
 
   // 每写 ~10s 帧量复查一次水位（均摊开销）
   if (stats_.frames_written % (params_.fps * 10) == 0) enforce_watermark();
+}
+
+Mp4SegmentSink::Stats Mp4SegmentSink::stats_snapshot() const {
+  std::lock_guard<std::mutex> lk(stats_mu_);
+  return stats_;  // current_file 含 std::string，快照拷贝后锁即释放
 }
 
 void Mp4SegmentSink::stop() {
