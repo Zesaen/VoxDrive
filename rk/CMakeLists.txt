@@ -28,6 +28,11 @@ target_include_directories(vox_encode
          /usr/include/rockchip)
 target_link_libraries(vox_encode PUBLIC rockchip_mpp)
 
+# ---- H.264 码流工具（C4 抽取）：split_annexb / avcC / AVCC sample 转换 ----
+add_library(vox_h264 common/h264_nalu.cpp)
+target_include_directories(vox_h264
+  PUBLIC ${CMAKE_SOURCE_DIR}/include ${VOX_COMMON})
+
 # ---- 存储层（C3/R3）：MP4 封装走 libavformat ----
 # 头文件：官方 4.4.2 dev 包解包到项目前缀（rk/scripts/setup_ffmpeg_headers.sh，不动系统包，
 # 因板上运行库是野火 rkmpp 补丁版、官方 dev 依赖对不上）；链接直接指系统同名 .so（同源 ABI 兼容）。
@@ -40,7 +45,17 @@ add_library(vox_storage storage/mp4_segment_sink.cpp)
 target_include_directories(vox_storage
   PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/storage ${VOX_COMMON}
   PRIVATE ${FFMPEG_INC})
-target_link_libraries(vox_storage PUBLIC
+target_link_libraries(vox_storage PUBLIC vox_h264
+  /usr/lib/aarch64-linux-gnu/libavformat.so.58
+  /usr/lib/aarch64-linux-gnu/libavcodec.so.58
+  /usr/lib/aarch64-linux-gnu/libavutil.so.56)
+
+# ---- 推流层（C4/R4）：flv over rtmp，同 libavformat ----
+add_library(vox_stream stream/rtmp_sink.cpp)
+target_include_directories(vox_stream
+  PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/stream ${VOX_COMMON}
+  PRIVATE ${FFMPEG_INC})
+target_link_libraries(vox_stream PUBLIC vox_h264
   /usr/lib/aarch64-linux-gnu/libavformat.so.58
   /usr/lib/aarch64-linux-gnu/libavcodec.so.58
   /usr/lib/aarch64-linux-gnu/libavutil.so.56)
@@ -62,10 +77,13 @@ target_link_libraries(test_encode vox_capture vox_encode)
 add_executable(test_record apps/test_record.cpp)
 target_link_libraries(test_record vox_capture vox_encode vox_storage)
 
+add_executable(test_rtmp apps/test_rtmp.cpp)
+target_link_libraries(test_rtmp vox_capture vox_encode vox_stream)
+
 # ---- 记录仪守护进程 + 服务自测客户端 ----
 add_executable(recorder_service service/recorder_service.cpp)
 target_include_directories(recorder_service PRIVATE ${ZMQ_KIT}/include)
-target_link_libraries(recorder_service vox_capture vox_encode vox_storage
+target_link_libraries(recorder_service vox_capture vox_encode vox_storage vox_stream
   ${ZMQ_KIT}/build/libzmq_component.so)
 set_target_properties(recorder_service PROPERTIES
   BUILD_RPATH "${ZMQ_KIT}/build" INSTALL_RPATH "${ZMQ_KIT}/build")

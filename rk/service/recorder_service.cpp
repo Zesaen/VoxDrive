@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -26,6 +27,7 @@
 #include "json.hpp"
 #include "mpp_encoder.h"
 #include "mp4_segment_sink.h"
+#include "rtmp_sink.h"
 #include "v4l2_capture.h"
 #include "msg_envelope.h"
 #include "vox_config.h"
@@ -67,6 +69,15 @@ nlohmann::json storage_snapshot(const std::string& dir, const vox::Mp4SegmentSin
   return j;
 }
 
+nlohmann::json rtmp_snapshot(const vox::RtmpSink& sink) {
+  const auto st = sink.stats_snapshot();
+  return nlohmann::json{{"connected", st.connected},
+                        {"frames_sent", st.frames_sent},
+                        {"connect_count", st.connect_count},
+                        {"connect_failures", st.connect_failures},
+                        {"write_errors", st.write_errors}};
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -74,7 +85,7 @@ int main(int argc, char** argv) {
   signal(SIGTERM, on_sigint);
 
   double run_seconds = 0;  // 0=常驻
-  std::string dir;
+  std::string dir, rtmp_url;
   uint32_t seg_seconds = 0, watermark = 0;
   for (int i = 1; i < argc; ++i) {
     std::string s(argv[i]);
@@ -82,6 +93,7 @@ int main(int argc, char** argv) {
     else if (s == "--segment-seconds" && i + 1 < argc) seg_seconds = std::stoi(argv[++i]);
     else if (s == "--dir" && i + 1 < argc) dir = argv[++i];
     else if (s == "--watermark" && i + 1 < argc) watermark = std::stoi(argv[++i]);
+    else if (s == "--rtmp-url" && i + 1 < argc) rtmp_url = argv[++i];
     else {
       VOX_ERROR("未知参数 %s", s.c_str());
       return 2;
@@ -131,6 +143,23 @@ int main(int argc, char** argv) {
     event_pub.publish(vox::msg::make(vox::msg::kTypeEvent, "rk.recorder", payload).dump());
   });
 
+  // ---- 推流 sink（C4/R4）：conf rk.rtmp_url 或 --rtmp-url 指定，空=不推流 ----
+  if (rtmp_url.empty()) rtmp_url = vox::config::get("rk.rtmp_url", "");
+  std::unique_ptr<vox::RtmpSink> rtmp;
+  if (!rtmp_url.empty()) {
+    vox::RtmpSink::Params rp;
+    rp.url = rtmp_url;
+    rp.width = cp.width;
+    rp.height = cp.height;
+    rp.fps = cp.fps;
+    rtmp = std::make_unique<vox::RtmpSink>(rp);
+    rtmp->set_event_handler([&event_pub](const char* event, const std::string& detail) {
+      nlohmann::json payload{{"event", event}};
+      payload["detail"] = nlohmann::json::parse(detail, nullptr, false);
+      event_pub.publish(vox::msg::make(vox::msg::kTypeEvent, "rk.recorder", payload).dump());
+    });
+  }
+
   std::atomic<bool> pipeline_ok{false};
   std::atomic<bool> pipeline_done{false};
 
@@ -155,6 +184,10 @@ int main(int argc, char** argv) {
     if (!sink.start(enc.sps_pps())) {
       cap.stop();
       return;
+    }
+    if (rtmp && !rtmp->start(enc.sps_pps())) {
+      VOX_WARN("RTMP sink 初始化失败，仅录像（推流不可用不影响录制）");
+      rtmp.reset();  // 失败只发生在服务就绪前，控制线程尚未应答，无并发
     }
     pipeline_ok.store(true);
     VOX_INFO("pipeline up: %s", cap.describe().c_str());
@@ -193,18 +226,19 @@ int main(int argc, char** argv) {
       }
       const vox::EncodedPacket* pkt = nullptr;
       if (enc.encode(*f, &pkt) && pkt) {
-        if (record_this) {
-          sink.on_packet(*pkt);
-        } else {
+        if (record_this) sink.on_packet(*pkt);
+        else {
           std::lock_guard<std::mutex> lk(st.mu);
           st.frames_dropped++;
         }
+        if (rtmp) rtmp->on_packet(*pkt);  // 预览流不受录像开关影响
         std::lock_guard<std::mutex> lk(st.mu);
         st.frames_encoded++;
       }
       cap.release(f);
     }
     sink.stop();  // 收尾当前段（写 trailer）
+    if (rtmp) rtmp->stop();
     cap.stop();
     VOX_INFO("pipeline down");
   });
@@ -248,6 +282,7 @@ int main(int argc, char** argv) {
           {"frames_dropped", st.frames_dropped},
           {"uptime_s", (steady_ns() - st.start_ns) / 1e9},
           {"storage", storage_snapshot(storage_dir, sink)}};
+      if (rtmp) reply_payload["rtmp"] = rtmp_snapshot(*rtmp);
     } else if (cmd == "set_recording") {
       const bool want = payload.value("value", true);
       {

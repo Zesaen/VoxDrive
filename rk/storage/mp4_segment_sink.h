@@ -66,9 +66,6 @@ class Mp4SegmentSink final : public IVideoSink {
   void close_segment();      // 写 trailer 并落盘
   void enforce_watermark();  // 超水位删最旧段（跳过当前段）
 
-  // Annex-B SPS/PPS → avcC（MP4 的 extradata 格式，含 4 字节长度前缀约定）
-  static std::vector<uint8_t> annexb_to_avcc(const std::vector<uint8_t>& annexb);
-
   Params params_;
   std::vector<uint8_t> avcc_;  // start 时生成，每段复用
   AVFormatContext* fmt_ = nullptr;

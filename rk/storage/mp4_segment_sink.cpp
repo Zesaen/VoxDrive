@@ -15,6 +15,7 @@
 #include <filesystem>
 
 #include "json.hpp"
+#include "vox/h264_nalu.h"
 #include "vox_log.h"
 
 extern "C" {
@@ -40,34 +41,6 @@ std::string segment_path(const std::string& dir) {
   return dir + "/seg_" + ts + ".mp4";
 }
 
-struct NalRef {
-  const uint8_t* p;
-  size_t len;
-};
-
-// 扫描 Annex-B 装载里的全部 NAL。两个边界细节（都踩过）：
-//   1) 起始码的前导零属于码本身不属于上一个 NAL——尾部零字节一律剔除
-//      （RBSP 结束字节必非零，剔除零安全）；
-//   2) 扫到缓冲区末尾时上一个 NAL 不能被截短（内层循环条件须含等号）。
-std::vector<NalRef> split_annexb(const uint8_t* d, size_t n) {
-  std::vector<NalRef> out;
-  size_t i = 0;
-  while (i + 4 <= n) {  // 起始码后至少 1 字节 NAL 头才有意义
-    if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1) {
-      const size_t start = i + 3;
-      size_t j = start;
-      while (j + 3 <= n && !(d[j] == 0 && d[j + 1] == 0 && d[j + 2] == 1)) ++j;
-      size_t end = (j + 3 <= n) ? j : n;
-      while (end > start && d[end - 1] == 0) --end;
-      if (end > start) out.push_back({d + start, end - start});
-      i = j;
-    } else {
-      ++i;
-    }
-  }
-  return out;
-}
-
 std::vector<std::string> list_segments(const std::string& dir) {
   std::vector<std::string> out;
   DIR* d = opendir(dir.c_str());
@@ -91,37 +64,6 @@ std::vector<std::string> list_segments(const std::string& dir) {
 Mp4SegmentSink::Mp4SegmentSink(const Params& p) : params_(p) {}
 
 Mp4SegmentSink::~Mp4SegmentSink() { stop(); }
-
-std::vector<uint8_t> Mp4SegmentSink::annexb_to_avcc(const std::vector<uint8_t>& ab) {
-  const uint8_t* sps = nullptr;
-  const uint8_t* pps = nullptr;
-  size_t sps_len = 0, pps_len = 0;
-  for (const NalRef& n : split_annexb(ab.data(), ab.size())) {
-    const uint8_t type = n.p[0] & 0x1f;
-    if (type == 7 && !sps) { sps = n.p; sps_len = n.len; }
-    if (type == 8 && !pps) { pps = n.p; pps_len = n.len; }
-  }
-  if (!sps || !pps || sps_len < 4) {
-    VOX_ERROR("extradata 中未找到 SPS/PPS（sps=%p pps=%p）", (void*)sps, (void*)pps);
-    return {};
-  }
-  std::vector<uint8_t> avcc;
-  avcc.reserve(11 + sps_len + pps_len);
-  avcc.push_back(1);                                // configurationVersion
-  avcc.push_back(sps[1]);                           // profile_idc
-  avcc.push_back(sps[2]);                           // constraint flags
-  avcc.push_back(sps[3]);                           // level_idc
-  avcc.push_back(0xfc | 0x03);                      // lengthSizeMinusOne=3（4 字节长度前缀）
-  avcc.push_back(0xe0 | 0x01);                      // numOfSequenceParameterSets=1
-  avcc.push_back(static_cast<uint8_t>(sps_len >> 8));
-  avcc.push_back(static_cast<uint8_t>(sps_len & 0xff));
-  avcc.insert(avcc.end(), sps, sps + sps_len);
-  avcc.push_back(0x01);                             // numOfPictureParameterSets
-  avcc.push_back(static_cast<uint8_t>(pps_len >> 8));
-  avcc.push_back(static_cast<uint8_t>(pps_len & 0xff));
-  avcc.insert(avcc.end(), pps, pps + pps_len);
-  return avcc;
-}
 
 bool Mp4SegmentSink::start(const std::vector<uint8_t>& sps_pps) {
   std::error_code ec;
@@ -279,13 +221,7 @@ void Mp4SegmentSink::on_packet(const EncodedPacket& pkt) {
 
   // MP4 sample 必须是 AVCC（4 字节长度前缀），movenc 不代转 Annex-B——逐 NAL 重写
   scratch_.clear();
-  for (const NalRef& n : split_annexb(pkt.data, pkt.size)) {
-    scratch_.push_back(static_cast<uint8_t>(n.len >> 24));
-    scratch_.push_back(static_cast<uint8_t>(n.len >> 16));
-    scratch_.push_back(static_cast<uint8_t>(n.len >> 8));
-    scratch_.push_back(static_cast<uint8_t>(n.len));
-    scratch_.insert(scratch_.end(), n.p, n.p + n.len);
-  }
+  annexb_to_length_prefixed(pkt.data, pkt.size, scratch_);
   if (scratch_.empty()) return;  // 无完整 NAL，丢弃
   avpkt_->data = scratch_.data();
   avpkt_->size = static_cast<int>(scratch_.size());
