@@ -29,6 +29,7 @@ class MppEncoder {
     uint32_t bitrate_bps = 4000000;  // VBR 目标码率（bps）
   };
 
+  MppEncoder() : MppEncoder(Params{}) {}  // 参数走默认值，后续 start(Params) 再定
   explicit MppEncoder(const Params& p);
   ~MppEncoder();
 
