@@ -41,6 +41,11 @@ class V4L2Capture final : public IVideoSource {
   void release(const VideoFrame* frame) override;
   std::string describe() const override;
 
+  // 协商后的实际参数（start() 前为构造值；驱动可能调整尺寸/stride）
+  uint32_t width() const { return params_.width; }
+  uint32_t height() const { return params_.height; }
+  uint32_t stride() const { return static_cast<uint32_t>(cached_stride_); }
+
  private:
   struct MappedBuffer {
     void* start = nullptr;
