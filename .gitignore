@@ -17,6 +17,9 @@ docs/internal/
 *.rknn
 *.npy
 *.pkl
+# 例外：RAG 向量库（138KB 工程产物，随代码走）
+!jetson/services/rag/python/vector_db/*.npy
+!jetson/services/rag/python/vector_db/*.pkl
 
 # ================= 构建产物 =================
 build/
