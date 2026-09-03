@@ -78,6 +78,7 @@ docs/                 # 工程文档（部署手册、架构说明、实测记�
 | TTS 播报端到端（合成+ALSA 播放） | 2.7 s（"启动自检测试"短句） | `selftest_tts.sh` 三端口握手计时，2026-09-03 | 已实测 |
 | 1080p 采集帧率（RK, IMX415→rkisp NV12） | 30.0 fps（120 帧，max 帧间距 33ms） | `test_capture` 驱动时间戳统计，2026-09-03 | 已实测 |
 | 1080p 采集→MPP H.264 硬编（RK） | 30.0 fps；编码延迟 avg 4.8ms / max 8.5ms；全链路 CPU ~2.8%（单核）；静态场景 VBR 实际 0.55Mbps（目标 4Mbps，GOP 2s 节奏 5/5 I 帧）；ffprobe/ffmpeg 全量解码零错误 | `test_encode` 300 帧 + 板上 ffmpeg 校验，2026-09-03 | 已实测 |
+| MP4 分段循环录像（RK） | 10s→3 段（测试段长 3s），段边界严格 I 帧；每段 ffmpeg 全量解码零错误；水位触发按最旧序删段且当前段幸免 | `test_record` 分段+水位双相位，2026-09-03 | 已实测 |
 | RTMP 推流码率 | 待实测 | mediamtx 统计 | 未开始（RK 侧） |
 | 语音端到端延迟（ASR→TTS 播报结束） | 待实测 | 毫秒日志打点对账 | 未开始 |
 | 跨板查询往返延迟 | 待实测 | 毫秒日志打点对账 | 未开始 |
@@ -89,7 +90,8 @@ docs/                 # 工程文档（部署手册、架构说明、实测记�
 - [ ] mediamtx RTMP 服务上 Jetson（部署被网络阻塞，见 models_manifest）
 - [x] RK3588 硬件链路验证 + 采集层（野火 LubanCat-4/RK3588S + IMX415 MIPI；`IVideoSource`/`IVideoSink` 接口抽象 + `V4L2Capture` mmap/DMA-BUF 实现，NV12 1920x1080 实测 30.0fps 板上自测 PASS）
 - [x] RK3588 MPP H.264 硬编（NV12 直入 VBR，30fps/编码延迟 4.8ms/全链路 CPU 2.8%，ffmpeg 全量解码校验通过；RGA 留作子码流缩放）
-- [ ] RK3588：MP4 分段循环存储 + RTMP 推流 + ZMQ 服务
+- [x] RK3588 MP4 分段循环录像（libavformat 封装，I 帧边界滚动分段/水位最旧覆盖/断链恢复，逐段解码校验）
+- [ ] RK3588：RTMP 推流 + ZMQ 服务
 - [ ] RK ZMQ 服务 + 跨板工具 + dashboard 预览/状态面板
 - [ ] 跨板闭环联调 + 端到端延迟分解实测
 - [ ] 语义双路意图路由、RKNN 事件锁录（规划中）
