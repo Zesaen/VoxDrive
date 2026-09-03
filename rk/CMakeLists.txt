@@ -13,10 +13,12 @@ endif()
 add_compile_options(-Wall -Wextra)
 
 set(VOX_ROOT ${CMAKE_SOURCE_DIR}/..)
-include_directories(${CMAKE_SOURCE_DIR}/include ${VOX_ROOT}/jetson/common)
+set(VOX_COMMON ${VOX_ROOT}/jetson/common)
 
 # ---- 采集层（C1/R1）----
 add_library(vox_capture capture/v4l2_capture.cpp)
+target_include_directories(vox_capture
+  PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/capture ${VOX_COMMON})
 
 # ---- 测试程序 ----
 add_executable(test_capture apps/test_capture.cpp)
