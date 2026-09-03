@@ -302,7 +302,7 @@ int main() {
             std::string rag_resp = rag_client.request(text);
             std::string rag_text = jstr(jparse(rag_resp), "text");
             VOX_INFO("[rag ->] context: %.80s", rag_text.c_str());
-            std::string status_prefix = (cls.query_type == edge_llm_rag::QueryClassification::UNKNOWN ||
+            std::string status_prefix = (cls.query_type == edge_llm_rag::QueryClassification::UNKNOWN_QUERY ||
                                          cls.query_type == edge_llm_rag::QueryClassification::COMPLEX_QUERY)
                                             ? std::string("RAG -> ") + type_str
                                             : std::string(type_str);
