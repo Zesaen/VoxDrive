@@ -72,6 +72,6 @@ set_target_properties(recorder_service PROPERTIES
 
 add_executable(test_recorder_client apps/test_recorder_client.cpp)
 target_include_directories(test_recorder_client PRIVATE ${VOX_COMMON} ${ZMQ_KIT}/include)
-target_link_libraries(test_recorder_client ${ZMQ_KIT}/build/libzmq_component.so)
+target_link_libraries(test_recorder_client ${ZMQ_KIT}/build/libzmq_component.so zmq)
 set_target_properties(test_recorder_client PROPERTIES
   BUILD_RPATH "${ZMQ_KIT}/build" INSTALL_RPATH "${ZMQ_KIT}/build")
