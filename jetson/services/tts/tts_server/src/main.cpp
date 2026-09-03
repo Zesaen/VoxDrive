@@ -58,7 +58,7 @@ void playback_worker(DoubleMessageQueue &queue, AudioPlayer &player,
     while (true) {
         auto msg = queue.pop_audio();
         if (msg.data == nullptr) break;
-        VOX_DEBUG("play %d samples, is_last=%d", msg.length, msg.is_last ? 1 : 0);
+        VOX_DEBUG("play %zu samples, is_last=%d", msg.length, msg.is_last ? 1 : 0);
         player.play(msg.data.get(), msg.length * sizeof(int16_t), 1.0f);
         if (msg.is_last) {
             VOX_INFO("play_end 发布");
