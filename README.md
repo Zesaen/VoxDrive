@@ -72,7 +72,8 @@ docs/                 # 工程文档（部署手册、架构说明、实测记�
 
 | 指标 | 数值 | 测量方法 | 状态 |
 |---|---|---|---|
-| LLM 生成速度（Qwen2.5-1.5B Q4_K_M, Jetson Orin） | 待实测 | llama-server /metrics | 迁移中 |
+| LLM 生成速度（Qwen2.5-1.5B Q4_K_M, Jetson Orin Nano Super, -ngl 28 全层 offload） | 22.8 token/s | llama-server 非流式单请求 usage 分解计时（`selftest_llm.sh`，2026-09-03） | 已实测 |
+| RAG 检索延迟（CPU 嵌入，45 文档库） | 稳态 ~210 ms/查（首查 591 ms 含预热） | `selftest_rag.sh` REQ 计时，2026-09-03 | 已实测 |
 | 1080p 采集→编码帧率 | 待实测 | 帧计数打点 | 未开始 |
 | RTMP 推流码率 | 待实测 | mediamtx 统计 | 未开始 |
 | 语音端到端延迟（ASR→TTS 播报结束） | 待实测 | 毫秒日志打点对账 | 未开始 |
@@ -81,7 +82,7 @@ docs/                 # 工程文档（部署手册、架构说明、实测记�
 ## Roadmap
 
 - [x] zmq-comm-kit 通信库上 Jetson 编译验证（REQ/REP + PUB/SUB 回环）
-- [ ] Jetson 七服务收编 + 标准重构（配置统一/公共 JSON 模块/毫秒日志/死代码清理）
+- [ ] Jetson 七服务收编 + 标准重构（**5/7 完成**：公共地基/tool_bus/intent_router/rag/llm/dashboard 已上板并通过自测；tts/asr 进行中）
 - [ ] mediamtx RTMP 服务上 Jetson
 - [ ] RK3588：V4L2 采集 → RGA → MPP 硬编 → MP4 分段循环存储 + RTMP 推流
 - [ ] RK ZMQ 服务 + 跨板工具 + dashboard 预览/状态面板
