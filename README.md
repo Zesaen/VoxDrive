@@ -6,7 +6,7 @@
 
 - ✅ Jetson 侧：七服务收编自上一代单体语音座舱并完成标准重构，全栈一键启动 + 回归测试 4/4 PASS
 - ✅ RK3588 侧：采集（30.0fps）→ MPP 硬编 → MP4 分段循环存储 → RTMP 推流 → ZMQ 状态/事件服务，全链路板上自测 PASS
-- 🚧 跨板联调：tool_bus 跨板工具、dashboard 预览面板、端到端延迟对账（RTMP 服务器 mediamtx 待部署）
+- 🚧 端到端实测收口：ASR/TTS 段延迟对账、长稳（跨板语音闭环与延迟分解已实测）
 
 ## 系统架构
 
@@ -203,7 +203,8 @@ jetson/scripts/run_regression.sh             # 回归测试
 | 1080p 采集→MPP H.264 硬编（RK） | 30.0 fps；编码延迟 avg 4.8ms / max 8.5ms；全链路 CPU ~2.8%（单核）；静态场景 VBR 实际 0.55Mbps（目标 4Mbps，GOP 2s 节奏 5/5 I 帧）；ffprobe/ffmpeg 全量解码零错误 | `test_encode` 300 帧 + 板上 ffmpeg 校验，2026-09-03 | 已实测 |
 | MP4 分段循环录像（RK） | 10s→3 段（测试段长 3s），段边界严格 I 帧；每段 ffmpeg 全量解码零错误；水位触发按最旧序删段且当前段幸免 | `test_record` 分段+水位双相位，2026-09-03 | 已实测 |
 | RK ZMQ 服务（REQ 状态查询 / PUB 事件上行） | 状态查询含 recording/pipeline_fps/存储水位（used 52% 实测）；录像开关 off/on 应答正确；慢加入者 SUB 收到 `segment_closed` 事件信封；16s 试跑 4 段全部 ffprobe 有效 | `test_recorder_client` REQ+SUB 双通道自测，2026-09-03 | 已实测 |
-| RTMP 推流（RK 回环验证） | 推流 408 帧与录像完全一致（双 sink 扇出无丢帧）；拉流 h264 1080p、ffmpeg 解码零错误；实测码率 0.52Mbps（静态场景 VBR 下探，目标 4Mbps）；服务端中途断开→写失败即时检测→I 帧+2s 冷却重连，录像管线不受影响 | `test_rtmp` 两相位 + `recorder_service --rtmp-url` 集成，ffmpeg `-listen 1` 作回环接收端，2026-09-03 | 已实测（跨板拉流待 mediamtx 部署） |
+| RTMP 推流（回环+跨板真机） | 回环：推流 408 帧与录像一致、断链重连管线不崩；**跨板（RK→路由器→Jetson mediamtx）**：RTSP 拉流 ffprobe h264 1920x1080 30fps、30.2s 全量解码零错误、实测码率 0.71Mbps（静态 VBR 下探，目标 4Mbps），PC 可经 HLS :8888 访问 | `test_rtmp` 回环 + mediamtx v1.20.1 部署后 ffprobe/ffmpeg 拉流，2026-09-04 | 已实测 |
+| dashboard 拉流预览 + 状态面板 | ffmpeg 拉 RTSP→BGRA 960x540→Qt 渲染（断流 2s 自动重连）；状态卡片 5s 轮询 RK（30.0fps/段数/水位条实时回读）；REC/预览/抓拍按钮经 tool_bus 控真设备；在线→离线跳变弹告警 | offscreen 截图 + 按钮链路实测，2026-09-04 | 已实测（预览偏绿=暗光下无 3A 传感器表现，调优项） |
 | 跨板语音闭环（dashcam 域 6 类查询：状态/存储/抓拍/录像开关×2/预览开关） | 6/6 命中真实设备：应答含实测值（磁盘 52%/剩余 14.6GB、快照 1920x1080 183KB 落盘 Jetson）；RK 状态回读与指令一致。延迟分解（文本进入→TTS 文本发出）：控制类 0.43-0.53s、状态查询 1.0-2.1s、抓拍 3.3s；其中跨板工具 RTT 仅 2-10ms（抓拍 150ms 含 RK 端 JPEG 编码+183KB 跨板传输），其余为 LLM 组织耗时 | intent_router 毫秒日志逐级打点，2026-09-04 | 已实测（ASR 麦克风入口与 TTS 播放时长未计入，stdin_asr 注入文本） |
 | 异常事件→dashboard 告警（跨板 PUB/SUB） | RK 水位删除事件（`--watermark 40` 触发真实删除）经 :6701 PUB 上行，Jetson dashboard 订阅实时收到并弹告警横幅；事件信封含 file/segments_deleted/used_percent。注意两板时钟偏差 ~4.2s（Jetson 快），跨板延迟对账以信封 `timestamp_ms` 为准 | RK 服务日志与 dashboard 事件日志对账，2026-09-04 | 已实测 |
 | 语音端到端延迟（ASR→TTS 播报结束） | 待实测 | 毫秒日志打点对账 | 未开始 |
@@ -214,15 +215,16 @@ jetson/scripts/run_regression.sh             # 回归测试
 
 - [x] zmq-comm-kit 通信库上 Jetson 编译验证（REQ/REP + PUB/SUB 回环）
 - [x] Jetson 七服务收编 + 标准重构（统一配置/公共 JSON/毫秒日志/死代码清理；七服务全部板上自测 PASS，`start_core.sh` 一键全栈启动 + `run_regression.sh` 4/4 PASS）
-- [ ] mediamtx RTMP 服务上 Jetson（部署被网络阻塞，见 models_manifest）
+- [x] mediamtx v1.20.1 RTMP/RTSP/HLS 服务上 Jetson（`start_core.sh` 一键编排；gh-proxy 镜像获取）
 - [x] RK3588 硬件链路验证 + 采集层（野火 LubanCat-4/RK3588S + IMX415 MIPI；`IVideoSource`/`IVideoSink` 接口抽象 + `V4L2Capture` mmap/DMA-BUF 实现，NV12 1920x1080 实测 30.0fps 板上自测 PASS）
 - [x] RK3588 MPP H.264 硬编（NV12 直入 VBR，30fps/编码延迟 4.8ms/全链路 CPU 2.8%，ffmpeg 全量解码校验通过；RGA 留作子码流缩放）
 - [x] RK3588 MP4 分段循环录像（libavformat 封装，I 帧边界滚动分段/水位最旧覆盖/断链恢复，逐段解码校验）
 - [x] RK ZMQ 服务（`recorder_service`：V4L2→MPP→MP4 管线线程 + REP 状态/录像开关 + PUB 事件上行，统一消息信封；`test_recorder_client` 双通道自测 PASS）
-- [x] RK3588 RTMP 推流（`RtmpSink` flv over rtmp：avcC/AVCC 转换与 MP4 共用、I 帧+冷却断链重连；ffmpeg `-listen 1` 回环两相位自测 PASS + 服务级双扇出集成验证；跨板 mediamtx 部署待网络）
+- [x] RK3588 RTMP 推流（`RtmpSink` flv over rtmp：avcC/AVCC 转换与 MP4 共用、I 帧+冷却断链重连；回环两相位自测 PASS + 跨板真机 mediamtx 拉流 30.2s 解码零错误、实测 0.71Mbps）
 - [x] 跨板工具（`dashcam`：状态查询 rtt 2ms / 录像与预览开关 / 抓拍 JPEG 跨板落盘；RK 端配套 `set_preview`/`snapshot` 命令）
 - [x] 语音闭环（dashcam 域关键词确定性直通：LLM 选工具不可靠→命中即执行，LLM 仅组织真实结果；6 类查询全通，控制类文本链路 0.43-0.53s）+ 异常事件 dashboard 告警横幅（水位删除事件实测触达）
-- [ ] dashboard 拉流预览面板 + 录像/存储状态卡片（待 mediamtx）；端到端延迟分解补 ASR/TTS 段
+- [x] dashboard 拉流预览面板 + 录像/存储状态卡片（ffmpeg RTSP→Qt 渲染 + 5s 状态轮询 + 真设备按钮 + 离线告警）
+- [ ] 端到端延迟分解补 ASR/TTS 段（跨板语音闭环分解已实测）
 - [ ] 语义双路意图路由、RKNN 事件锁录（规划中）
 
 ## License
