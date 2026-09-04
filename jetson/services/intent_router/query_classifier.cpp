@@ -245,6 +245,14 @@ namespace edge_llm_rag
             semantic.query_type != QueryClassification::UNKNOWN_QUERY)
             return semantic;
 
+        // 规则 3.5: 规则通路无证据（UNKNOWN=关键词全 miss）而语义已过自身阈值
+        // → 采纳 semantic。改述句（"多久做一次首保"）规则只能给 UNKNOWN，
+        // 此时语义是唯一有效信号；实测 conf≈0.58 的正确 FACTUAL 曾被 0.6
+        // 投票门槛压回 UNKNOWN 走 LLM 慢路径（9.4s），此规则修复该类回归。
+        if (rule.query_type == QueryClassification::UNKNOWN_QUERY &&
+            semantic.query_type != QueryClassification::UNKNOWN_QUERY)
+            return semantic;
+
         // 规则 4: Semantic 中等置信度 (0.4~0.7) → 与规则投票
         if (semantic.confidence >= 0.4f &&
             semantic.query_type != QueryClassification::UNKNOWN_QUERY)
