@@ -70,6 +70,13 @@ target_link_libraries(vox_snapshot PUBLIC
   /usr/lib/aarch64-linux-gnu/libswscale.so.5
   /usr/lib/aarch64-linux-gnu/libavutil.so.56)
 
+# ---- 事件锁录检测（R10）：NV12 → RGA 缩放/转RGB → RKNN INT8（NPU core0）----
+# librknnrt 运行库板载（/usr/lib/librknnrt.so）；rknn_api.h 本仓 vendored（prj2 同源）
+add_library(vox_detect detect/rknn_detector.cpp)
+target_include_directories(vox_detect
+  PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/detect ${VOX_COMMON})
+target_link_libraries(vox_detect PUBLIC rga rknnrt)
+
 # ---- 记录仪服务（C5/R5）：zmq-comm-kit 源码编译在 ~/Desktop/VoxDrive/zmq-comm-kit ----
 #（PC 侧执行 rk/scripts/setup_zmq_kit.sh 拷贝源码并板上编译；复制不软链）
 set(ZMQ_KIT "$ENV{HOME}/Desktop/VoxDrive/zmq-comm-kit")
@@ -90,11 +97,14 @@ target_link_libraries(test_record vox_capture vox_encode vox_storage)
 add_executable(test_rtmp apps/test_rtmp.cpp)
 target_link_libraries(test_rtmp vox_capture vox_encode vox_stream)
 
+add_executable(test_detect apps/test_detect.cpp)
+target_link_libraries(test_detect vox_capture vox_detect)
+
 # ---- 记录仪守护进程 + 服务自测客户端 ----
 add_executable(recorder_service service/recorder_service.cpp)
 target_include_directories(recorder_service PRIVATE ${ZMQ_KIT}/include)
 target_link_libraries(recorder_service vox_capture vox_encode vox_storage vox_stream
-  vox_snapshot ${ZMQ_KIT}/build/libzmq_component.so)
+  vox_snapshot vox_detect ${ZMQ_KIT}/build/libzmq_component.so)
 set_target_properties(recorder_service PROPERTIES
   BUILD_RPATH "${ZMQ_KIT}/build" INSTALL_RPATH "${ZMQ_KIT}/build")
 

@@ -13,6 +13,7 @@
 
 #include <signal.h>
 #include <sys/statvfs.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
@@ -20,6 +21,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -30,6 +32,7 @@
 #include "json.hpp"
 #include "mpp_encoder.h"
 #include "mp4_segment_sink.h"
+#include "rknn_detector.h"
 #include "rtmp_sink.h"
 #include "v4l2_capture.h"
 #include "base64.h"
@@ -51,6 +54,35 @@ struct SharedState {
   int64_t start_ns = 0;
 };
 
+// 检测线程统计快照（检测线程写，控制线程读）
+struct DetectState {
+  std::mutex mu;
+  bool enabled = false;
+  uint64_t inferences = 0;
+  uint64_t detections = 0;        // 过滤后命中目标数
+  uint64_t lock_events = 0;       // 触发锁段的事件次数
+  double infer_ms_ewma = 0.0;
+  double infer_ms_max = 0.0;
+};
+
+// 最新帧槽（R10）：管线线程每 N 帧塞入紧凑 NV12 拷贝，检测线程取走。
+// 检测线程忙时旧帧被覆盖（最新帧语义，检测不需要每一帧）。
+struct DetectSlot {
+  std::mutex mu;
+  std::condition_variable cv;
+  std::vector<uint8_t> nv12;
+  int w = 0, h = 0;
+  bool fresh = false;
+};
+
+// 检测事件邮箱：检测线程投递 JSON（信封），管线线程发布——
+// zmq socket 非线程安全，PUB 保持在管线线程单线程使用。
+struct EventMailbox {
+  std::mutex mu;
+  std::string envelope;
+  bool pending = false;
+};
+
 // 抓拍请求：控制线程发起 → 管线线程在下一帧编码 JPEG → 控制线程取走应答
 struct SnapshotRequest {
   std::mutex mu;
@@ -59,6 +91,19 @@ struct SnapshotRequest {
   bool done = false;
   std::vector<uint8_t> jpeg;
 };
+
+// NV12 带行距 → 紧凑拷贝（检测线程持有帧期间采集缓冲已归还，必须拷贝）
+void pack_nv12(const vox::VideoFrame* f, std::vector<uint8_t>& out) {
+  const int w = static_cast<int>(f->width), h = static_cast<int>(f->height);
+  out.resize(static_cast<size_t>(w) * h * 3 / 2);
+  const uint8_t* y = static_cast<const uint8_t*>(f->plane[0]);
+  const uint8_t* uv = static_cast<const uint8_t*>(f->plane[1]);
+  const size_t sy = f->plane_stride[0], suv = f->plane_stride[1];
+  uint8_t* d = out.data();
+  for (int r = 0; r < h; ++r) memcpy(d + static_cast<size_t>(r) * w, y + r * sy, w);
+  uint8_t* duv = d + static_cast<size_t>(w) * h;
+  for (int r = 0; r < h / 2; ++r) memcpy(duv + static_cast<size_t>(r) * w, uv + r * suv, w);
+}
 
 int64_t steady_ns() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -73,6 +118,8 @@ nlohmann::json storage_snapshot(const std::string& dir, const vox::Mp4SegmentSin
                    {"segments_total", st.segments_written},
                    {"segments_deleted", st.segments_deleted},
                    {"bytes_written", st.bytes_written},
+                   {"locked_segments", st.locked_segments},
+                   {"locked_bytes", st.locked_bytes},
                    {"current_file", st.current_file}};
   struct statvfs vfs {};
   if (statvfs(dir.c_str(), &vfs) == 0 && vfs.f_blocks > 0) {
@@ -134,6 +181,8 @@ int main(int argc, char** argv) {
       seg_seconds ? seg_seconds : vox::config::get_int("rk.segment_seconds", 60);
   sp.watermark_percent =
       watermark ? watermark : vox::config::get_int("rk.watermark_percent", 85);
+  sp.lock_quota_bytes =
+      static_cast<uint64_t>(vox::config::get_int("rk.lock_quota_mb", 500)) * 1024 * 1024;
   sp.fps = cp.fps;
 
   const std::string status_endpoint =
@@ -144,6 +193,22 @@ int main(int argc, char** argv) {
   SharedState st;
   st.start_ns = steady_ns();
   SnapshotRequest snap;
+  DetectState dst;
+  DetectSlot dslot;
+  EventMailbox detect_mailbox;
+
+  // ---- 事件锁录检测器（R10）：conf rk.detect_model 缺失/文件不存在 → 优雅禁用 ----
+  const std::string detect_model =
+      vox::config::get("rk.detect_model", "$HOME/Desktop/VoxDrive/models/yolov5s-640-640.rknn");
+  vox::RknnDetector detector;
+  const int detect_interval = vox::config::get_int("rk.detect_interval_frames", 30);  // 30帧=1fps
+  const int detect_cooldown_ms = vox::config::get_int("rk.detect_cooldown_s", 10) * 1000;
+  std::set<int> detect_classes;  // COCO: 0=person 2=car 3=motorcycle 5=bus 7=truck
+  {
+    std::string cs = vox::config::get("rk.detect_classes", "0,2,3,5,7");
+    for (char* tok = std::strtok(cs.data(), ", "); tok; tok = std::strtok(nullptr, ", "))
+      detect_classes.insert(std::atoi(tok));
+  }
 
   // ---- 事件上行 PUB（仅管线线程使用）----
   zmq_component::ZmqPub event_pub(event_endpoint);
@@ -176,6 +241,31 @@ int main(int argc, char** argv) {
 
   std::atomic<bool> pipeline_ok{false};
   std::atomic<bool> pipeline_done{false};
+
+  // ---- 事件锁录：检测器初始化 + 检测线程（R10）----
+  vox::RknnDetector::Params dp;
+  dp.model_path = detect_model;
+  dp.target_classes = detect_classes;
+  bool detect_on = false;
+  if (access(detect_model.c_str(), R_OK) == 0) {
+    detect_on = detector.start(dp);
+    if (detect_on) {
+      {
+        std::lock_guard<std::mutex> lk(dst.mu);
+        dst.enabled = true;
+      }
+      VOX_INFO("事件锁录启用: %s 间隔 %d 帧 冷却 %dms", detect_model.c_str(),
+               detect_interval, detect_cooldown_ms);
+    } else {
+      VOX_WARN("检测器初始化失败（%s），事件锁录禁用，录像不受影响",
+               detector.error().c_str());
+    }
+  } else {
+    VOX_WARN("检测模型不存在（%s），事件锁录禁用，录像不受影响", detect_model.c_str());
+  }
+
+  std::thread detect_thread;
+  // 检测线程在管线就绪判定之后启动（失败早退路径不创建，避免未 join 线程析构）
 
   // ---- 管线线程 ----
   std::thread pipeline([&]() {
@@ -249,6 +339,26 @@ int main(int argc, char** argv) {
       }
       last_ns = f->timestamp_ns;
 
+      // 事件锁录取帧（R10）：每 N 帧塞最新帧槽，检测线程异步消费（不阻塞主管线）
+      if (detect_on && f->sequence % detect_interval == 0) {
+        {
+          std::lock_guard<std::mutex> lk(dslot.mu);
+          pack_nv12(f, dslot.nv12);
+          dslot.w = static_cast<int>(f->width);
+          dslot.h = static_cast<int>(f->height);
+          dslot.fresh = true;
+        }
+        dslot.cv.notify_one();
+      }
+      // 检测事件邮箱：zmq socket 单线程约束，由管线线程统一发布
+      {
+        std::lock_guard<std::mutex> lk(detect_mailbox.mu);
+        if (detect_mailbox.pending) {
+          event_pub.publish(detect_mailbox.envelope);
+          detect_mailbox.pending = false;
+        }
+      }
+
       bool record_this = false;
       {
         std::lock_guard<std::mutex> lk(st.mu);
@@ -280,6 +390,65 @@ int main(int argc, char** argv) {
     pipeline.join();
     std::printf("RECORDER_SERVICE FAIL pipeline\n");
     return 1;
+  }
+
+  // ---- 检测线程（R10）：管线就绪后启动，失败早退路径不会走到这里 ----
+  if (detect_on) {
+    detect_thread = std::thread([&]() {
+      int64_t last_event_ns = 0;
+      while (g_stop == 0) {
+        std::vector<uint8_t> buf;
+        int w = 0, h = 0;
+        {
+          std::unique_lock<std::mutex> lk(dslot.mu);
+          dslot.cv.wait(lk, [&] { return dslot.fresh || g_stop; });
+          if (g_stop) break;
+          buf = std::move(dslot.nv12);
+          dslot.nv12.clear();
+          dslot.nv12.shrink_to_fit();
+          w = dslot.w;
+          h = dslot.h;
+          dslot.fresh = false;
+        }
+        std::vector<vox::Detection> dets = detector.detect_nv12(buf.data(), w, h);
+        const auto& ds = detector.stats();  // 检测线程独占 detector，直读安全
+        {
+          std::lock_guard<std::mutex> lk(dst.mu);
+          dst.inferences = ds.inferences;
+          dst.detections = ds.detections;
+          dst.infer_ms_ewma = ds.infer_ms_ewma;
+          dst.infer_ms_max = ds.infer_ms_max;
+        }
+        if (dets.empty()) continue;
+        const int64_t now = steady_ns();
+        if (last_event_ns > 0 && now - last_event_ns < detect_cooldown_ms * 1000000ll)
+          continue;  // 冷却：目标持续在画面内不重复锁段/刷事件
+        last_event_ns = now;
+
+        nlohmann::json objs = nlohmann::json::array();
+        for (const auto& d : dets)
+          objs.push_back({{"cls", d.cls}, {"prop", d.prop},
+                          {"box", {d.left, d.top, d.right, d.bottom}}});
+        sink.lock_current("detect");
+        {
+          std::lock_guard<std::mutex> lk(dst.mu);
+          dst.lock_events++;
+        }
+        nlohmann::json payload{{"event", "detect"},
+                                {"detections", objs},
+                                {"infer_ms", ds.infer_ms_ewma},
+                                {"locked", true}};
+        // 经邮箱交管线线程发布（zmq socket 非线程安全）
+        {
+          std::lock_guard<std::mutex> lk(detect_mailbox.mu);
+          detect_mailbox.envelope =
+              vox::msg::make(vox::msg::kTypeEvent, "rk.recorder", payload).dump();
+          detect_mailbox.pending = true;
+        }
+        VOX_INFO("[detect] %zu 目标（首类 %d conf %.2f），锁定当前段",
+                 dets.size(), dets.front().cls, dets.front().prop);
+      }
+    });
   }
 
   // ---- 控制线程（REP 状态/控制应答）----
@@ -317,6 +486,19 @@ int main(int argc, char** argv) {
         reply_payload["preview"] = rtmp->enabled();
       } else {
         reply_payload["preview"] = false;
+      }
+      {  // 事件锁录（R10）
+        std::lock_guard<std::mutex> lk(dst.mu);
+        nlohmann::json classes = nlohmann::json::array();
+        for (int c : detect_classes) classes.push_back(c);
+        reply_payload["detect"] = {
+            {"enabled", dst.enabled},
+            {"model", detect_model},
+            {"classes", classes},
+            {"inferences", dst.inferences},
+            {"detections", dst.detections},
+            {"lock_events", dst.lock_events},
+            {"infer_ms", {{"ewma", dst.infer_ms_ewma}, {"max", dst.infer_ms_max}}}};
       }
     } else if (cmd == "set_recording") {
       const bool want = payload.value("value", true);
@@ -364,6 +546,12 @@ int main(int argc, char** argv) {
     }
   }
 
+  g_stop = 1;  // 退出路径统一置位（run_seconds 到期时控制/管线自然退出但检测线程阻塞在 cv）
+  {
+    std::lock_guard<std::mutex> lk(dslot.mu);
+    dslot.cv.notify_all();
+  }
+  if (detect_thread.joinable()) detect_thread.join();
   pipeline.join();
   VOX_INFO("recorder service exit");
   return 0;

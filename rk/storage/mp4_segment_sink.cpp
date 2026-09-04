@@ -59,6 +59,30 @@ std::vector<std::string> list_segments(const std::string& dir) {
   return out;
 }
 
+// 锁段列表（LOCK_ 前缀；水位删除只扫 seg_ 前缀，锁段天然豁免）
+std::vector<std::string> list_locked(const std::string& dir) {
+  std::vector<std::string> out;
+  DIR* d = opendir(dir.c_str());
+  if (!d) return out;
+  struct dirent* e;
+  while ((e = readdir(d)) != nullptr) {
+    std::string n(e->d_name);
+    if (n.size() > 13 && n.compare(0, 9, "LOCK_seg_") == 0 &&
+        n.compare(n.size() - 4, 4, ".mp4") == 0) {
+      out.push_back(dir + "/" + n);
+    }
+  }
+  closedir(d);
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+uint64_t file_size_of(const std::string& path) {
+  std::error_code ec;
+  const uint64_t sz = std::filesystem::file_size(path, ec);
+  return ec ? 0 : sz;
+}
+
 }  // namespace
 
 Mp4SegmentSink::Mp4SegmentSink(const Params& p) : params_(p) {}
@@ -153,6 +177,85 @@ void Mp4SegmentSink::close_segment() {
                             {"segments_total", stats_.segments_written},
                             {"bytes_total", stats_.bytes_written}}
                  .dump());
+  }
+
+  // 事件锁录（R10）：消费待锁标记 → LOCK_ 前缀改名（水位删除即豁免）
+  if (lock_pending_.exchange(false)) {
+    std::string reason;
+    {
+      std::lock_guard<std::mutex> lk(lock_mu_);
+      reason = std::move(lock_reason_);
+      lock_reason_.clear();
+    }
+    std::error_code ec;
+    const std::filesystem::path from(current_path_);
+    const std::filesystem::path to =
+        from.parent_path() / ("LOCK_" + from.filename().string());
+    std::filesystem::rename(from, to, ec);
+    if (!ec) {
+      const uint64_t sz = file_size_of(to.string());
+      {
+        std::lock_guard<std::mutex> lk(stats_mu_);
+        stats_.segments_locked++;
+        stats_.locked_segments++;
+        stats_.locked_bytes += sz;
+      }
+      VOX_INFO("segment locked: %s（原因: %s，锁段存量 %u）", to.string().c_str(),
+               reason.c_str(), [&] {
+                 std::lock_guard<std::mutex> lk(stats_mu_);
+                 return stats_.locked_segments;
+               }());
+      if (handler_) {
+        handler_("segment_locked",
+                 nlohmann::json{{"file", to.string()}, {"reason", reason}}.dump());
+      }
+      enforce_lock_quota();
+    } else {
+      VOX_WARN("锁段改名失败 %s: %s", to.string().c_str(), ec.message().c_str());
+    }
+  }
+}
+
+void Mp4SegmentSink::lock_current(const std::string& reason) {
+  lock_pending_.store(true);
+  std::lock_guard<std::mutex> lk(lock_mu_);
+  lock_reason_ = reason;
+}
+
+void Mp4SegmentSink::enforce_lock_quota() {
+  if (params_.lock_quota_bytes == 0) return;  // 0=不限制
+  for (int iter = 0; iter < 64; ++iter) {  // 有界：每释放一个复查一次
+    uint64_t locked_bytes = 0;
+    {
+      std::lock_guard<std::mutex> lk(stats_mu_);
+      locked_bytes = stats_.locked_bytes;
+    }
+    if (locked_bytes <= params_.lock_quota_bytes) return;
+    std::vector<std::string> locked = list_locked(params_.dir);
+    if (locked.empty()) return;
+    const std::filesystem::path from(locked.front());
+    const std::filesystem::path to =
+        from.parent_path() / from.filename().string().substr(5);  // 去 LOCK_ 前缀
+    std::error_code ec;
+    std::filesystem::rename(from, to, ec);
+    if (ec) return;
+    const uint64_t sz = file_size_of(to.string());
+    {
+      std::lock_guard<std::mutex> lk(stats_mu_);
+      if (stats_.locked_segments > 0) stats_.locked_segments--;
+      stats_.locked_bytes = stats_.locked_bytes > sz ? stats_.locked_bytes - sz : 0;
+    }
+    VOX_WARN("锁段超配额（%llu > %llu），释放最旧锁段 %s",
+             static_cast<unsigned long long>(locked_bytes),
+             static_cast<unsigned long long>(params_.lock_quota_bytes),
+             to.string().c_str());
+    if (handler_) {
+      handler_("lock_released",
+               nlohmann::json{{"file", to.string()},
+                              {"quota_bytes", params_.lock_quota_bytes},
+                              {"reason", "quota"}}
+                   .dump());
+    }
   }
 }
 
