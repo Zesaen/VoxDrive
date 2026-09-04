@@ -2,24 +2,29 @@
 """数字座舱 Dashboard（PyQt5）。
 
 SUB :port.tool_bus_pub（车控状态）+ :port.intent_router_pub（服务状态）
-   + tcp://rk.ip:rk.event_port（RK 行车记录异常事件，D2/R7 告警横幅）→ 界面刷新；
-REQ :port.tool_bus 执行按钮命令。端口读 voxdrive.conf。
+   + tcp://rk.ip:rk.event_port（RK 行车记录异常事件 → 告警横幅）→ 界面刷新；
+REQ :port.tool_bus 执行按钮命令；REQ rk.ip:rk.status_port 轮询行车记录状态；
+ffmpeg 子进程拉 mediamtx RTSP 出 BGRA 帧流 → 摄像头区实时预览（D3/R8）。
+端口读 voxdrive.conf。
 
-R8 扩展点：中部摄像头区（self.cam_view 文本占位）将替换为 RTMP 拉流渲染面板
-（行车记录预览），右侧面板组追加"录像/存储状态"卡片；届时在此挂载，不动其他布局。
+自测钩子（无屏验证）：VOX_DASH_SNAPSHOT=/tmp/x.png [VOX_DASH_SNAPSHOT_S=12]
+[VOX_DASH_AUTOPREVIEW=1] —— 延时 N 秒截图整窗后自动退出。
 """
 
 import datetime
 import json
+import os
 import pathlib
+import subprocess
 import sys
+import time
 
 JETSON_ROOT = pathlib.Path(__file__).resolve().parents[1]  # dashboard/ → jetson/
 sys.path.insert(0, str(JETSON_ROOT))
 
 import zmq  # noqa: E402
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal  # noqa: E402
-from PyQt5.QtGui import QColor, QFont, QPainter, QPalette  # noqa: E402
+from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPalette, QPixmap  # noqa: E402
 from PyQt5.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow,  # noqa: E402
                              QPushButton, QProgressBar, QVBoxLayout, QWidget)
 
@@ -86,13 +91,11 @@ PROG = f"""
     }}
 """
 
-VIEW_NAMES = {"front": "前视", "rear": "后视", "left": "左视", "right": "右视"}
 MODE_MAP   = {"cool": "制冷", "heat": "制热", "vent": "通风"}
 ROOF_MAP   = {"closed": "关闭", "open": "打开", "tilted": "翘起"}
 DEFAULT_S  = {"ac_on": "false", "ac_temp": "24", "ac_mode": "vent", "ac_fan": "2",
               "window_fl": "0", "window_fr": "0", "window_rl": "0", "window_rr": "0",
-              "sunroof_state": "closed", "seat_driver": "0", "seat_passenger": "0",
-              "camera_view": "front", "camera_recording": "false"}
+              "sunroof_state": "closed", "seat_driver": "0", "seat_passenger": "0"}
 FONT       = "Noto Sans CJK SC"
 
 # RK 行车记录异常事件 → 告警横幅（背景色, 边框色, 话术）；segment_* 等信息类事件不弹横幅
@@ -149,6 +152,110 @@ class ZmqSub(QThread):
         self.ok = False
 
 
+class DashcamPoller(QThread):
+    """周期轮询 RK recorder_service 状态（REQ :rk.status_port，消息信封），结构化数据直读。
+
+    与 DashcamControl 工具同协议但直达 RK 状态口：UI 需要结构化字段（帧率/水位/段数），
+    走 tool_bus 只能拿到组织好的中文字符串。read-only，不越过工具总线做控制。
+    """
+
+    sig_status = pyqtSignal(object)  # dict=状态 payload；None=RK 离线
+
+    def __init__(self, interval_s=5.0):
+        super().__init__()
+        self.ok = True
+        self.interval = interval_s
+        self.wake = False  # poke() 置位后立即轮询一轮（命令后回读）
+
+    def poke(self):
+        self.wake = True
+
+    def run(self):
+        ep = "tcp://%s:%s" % (vox_config.get("rk.ip", "192.168.137.200"),
+                              vox_config.get("rk.status_port", "6700"))
+        ctx = zmq.Context()
+        while self.ok:
+            req = ctx.socket(zmq.REQ)
+            req.setsockopt(zmq.RCVTIMEO, 2000)
+            req.setsockopt(zmq.LINGER, 0)
+            req.connect(ep)
+            try:
+                req.send_string(json.dumps({
+                    "version": 1, "type": "status", "timestamp_ms": int(time.time() * 1000),
+                    "source": "jetson.dashboard", "payload": {"cmd": "status"}}))
+                env = json.loads(req.recv_string())
+                self.sig_status.emit(env.get("payload"))
+            except (zmq.Again, zmq.ZMQError, json.JSONDecodeError, ValueError):
+                self.sig_status.emit(None)
+            finally:
+                req.close()
+            # poke 或到点再轮询（Event 语义用循环等待实现，避免额外锁）
+            deadline = time.time() + self.interval
+            while self.ok and not self.wake and time.time() < deadline:
+                self.msleep(100)
+            self.wake = False
+        ctx.destroy()
+
+    def stop(self):
+        self.ok = False
+
+
+class StreamPlayer(QThread):
+    """ffmpeg 拉 RTSP 出 BGRA 帧流 → QImage 信号（断流自动重连，预览开关即时生效）。
+
+    面板渲染路径：ffmpeg 解码 + 缩放到 PV_WID 宽（降低 Orin 上 UI 拷贝量），
+    rawvideo 管道读整帧；QImage 必须 .copy() 脱离管道缓冲后才跨线程安全。
+    """
+
+    sig_frame = pyqtSignal(QImage)
+    sig_state = pyqtSignal(str)  # live / retry / off
+
+    PV_WID = 960
+    PV_HGT = 540  # 16:9，源 1080p 等比缩放
+
+    def __init__(self, url):
+        super().__init__()
+        self.url = url
+        self.ok = True
+        self.enabled = False
+
+    def set_enabled(self, on):
+        self.enabled = on
+        if not on:
+            self.sig_state.emit("off")
+
+    def run(self):
+        frame_bytes = self.PV_WID * self.PV_HGT * 4
+        cmd = ["ffmpeg", "-loglevel", "error",
+               "-rtsp_transport", "tcp", "-fflags", "nobuffer", "-flags", "low_delay",
+               "-i", self.url,
+               "-vf", "scale=%d:%d" % (self.PV_WID, self.PV_HGT),
+               "-f", "rawvideo", "-pix_fmt", "bgra", "-"]
+        while self.ok:
+            if not self.enabled:
+                self.msleep(200)
+                continue
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL)
+            self.sig_state.emit("live")
+            while self.ok and self.enabled:
+                buf = proc.stdout.read(frame_bytes)
+                if not buf or len(buf) < frame_bytes:
+                    break  # 流结束/ffmpeg 退出（RK 停推或 mediamtx 重启）
+                img = QImage(buf, self.PV_WID, self.PV_HGT, QImage.Format_ARGB32)
+                self.sig_frame.emit(img.copy())
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            if self.ok and self.enabled:
+                self.sig_state.emit("retry")
+                deadline = time.time() + 2
+                while self.ok and self.enabled and time.time() < deadline:
+                    self.msleep(100)
+
+
 class BarGauge(QFrame):
     """水平条形仪表：彩色进度条。"""
 
@@ -185,6 +292,7 @@ class Dashboard(QMainWindow):
         self.setWindowTitle("数字座舱 · Vehicle AI")
         self.setStyleSheet(f"background:{BG};")
         self.state = dict(DEFAULT_S)
+        self.dash = {"online": False}  # RK 行车记录状态缓存（poller 维护）
         self._ui()
         self._zmq()
         self.clock = QTimer()
@@ -234,39 +342,83 @@ class Dashboard(QMainWindow):
         mr = QHBoxLayout()
         mr.setSpacing(10)
 
-        # 摄像头区（R8 扩展点：cam_view 文本占位 → 拉流渲染面板）
+        # 行车记录预览区（D3/R8：ffmpeg 拉流渲染，未开时文本占位）
         cf = QFrame()
         cf.setObjectName("card")
         cf.setStyleSheet(CARD)
         cl = QVBoxLayout(cf)
         cl.setContentsMargins(0, 0, 0, 0)
-        self.cam_view = QLabel("前 视")
+        ch = QHBoxLayout()
+        ch.setContentsMargins(14, 10, 14, 0)
+        ch.addWidget(self._hl("🚗 行车记录 · 实时预览", 13, ACCENT))
+        ch.addStretch()
+        self.live_pill = QLabel("○ 预览关")
+        self.live_pill.setFont(QFont(FONT, 11, QFont.Bold))
+        self.live_pill.setStyleSheet(f"color:{T2}; background:transparent; border:none;")
+        ch.addWidget(self.live_pill)
+        cl.addLayout(ch)
+        self.cam_view = QLabel("预览未开启")
         self.cam_view.setAlignment(Qt.AlignCenter)
-        self.cam_view.setFont(QFont(FONT, 48, QFont.Bold))
+        self.cam_view.setFont(QFont(FONT, 36, QFont.Bold))
         self.cam_view.setStyleSheet(
             f"color:rgba(0,200,255,0.15); background:#000; border-radius:14px; border:none;")
         self.cam_view.setMinimumSize(640, 380)
         cl.addWidget(self.cam_view)
         cb = QHBoxLayout()
         cb.setContentsMargins(12, 8, 12, 12)
-        self.cam_btns = {}
-        for k, n in VIEW_NAMES.items():
-            b = QPushButton(n)
-            b.setStyleSheet(BTN)
-            b.clicked.connect(lambda _, kk=k: self._cmd("camera_capture", kk))
-            cb.addWidget(b)
-            self.cam_btns[k] = b
+        # 真设备按钮组：录像开关 / 预览开关 / 跨板抓拍（与语音同走 tool_bus → RK）
         self.rec_btn = QPushButton("● REC")
         self.rec_btn.setStyleSheet(BTN)
         self.rec_btn.clicked.connect(self._toggle_rec)
         cb.addWidget(self.rec_btn)
+        self.pv_btn = QPushButton("预览 开")
+        self.pv_btn.setStyleSheet(BTN)
+        self.pv_btn.clicked.connect(self._toggle_preview)
+        cb.addWidget(self.pv_btn)
+        self.snap_btn = QPushButton("📸 抓拍")
+        self.snap_btn.setStyleSheet(BTN)
+        self.snap_btn.clicked.connect(self._snap)
+        cb.addWidget(self.snap_btn)
         cb.addStretch()
         cl.addLayout(cb)
         mr.addWidget(cf, 65)
 
-        # 右侧面板组（R8 扩展点：追加"录像/存储状态"卡片）
+        # 右侧面板组
         rp = QVBoxLayout()
         rp.setSpacing(8)
+
+        # 行车记录状态卡片（D3/R8：poller 5s 回读 RK 结构化状态）
+        dc = QFrame()
+        dc.setObjectName("card")
+        dc.setStyleSheet(CARD)
+        dcl = QVBoxLayout(dc)
+        dcl.setSpacing(6)
+        dh = QHBoxLayout()
+        dh.addWidget(self._hl("🚗 行车记录仪", 13, ACCENT))
+        dh.addStretch()
+        self.dc_state = QLabel("连接中…")
+        self.dc_state.setFont(QFont(FONT, 14, QFont.Bold))
+        self.dc_state.setStyleSheet(f"color:{T2}; background:transparent; border:none;")
+        dh.addWidget(self.dc_state)
+        dcl.addLayout(dh)
+        drow = QHBoxLayout()
+        self.dc_fps = QLabel("-- fps")
+        self.dc_fps.setFont(QFont(FONT, 12))
+        self.dc_fps.setStyleSheet(f"color:{ACCENT2}; background:transparent; border:none;")
+        drow.addWidget(self.dc_fps)
+        drow.addStretch()
+        self.dc_segs = QLabel("-- 段")
+        self.dc_segs.setFont(QFont(FONT, 12))
+        self.dc_segs.setStyleSheet(f"color:{T2}; background:transparent; border:none;")
+        drow.addWidget(self.dc_segs)
+        self.dc_free = QLabel("-- GB 可用")
+        self.dc_free.setFont(QFont(FONT, 12))
+        self.dc_free.setStyleSheet(f"color:{T2}; background:transparent; border:none;")
+        drow.addWidget(self.dc_free)
+        dcl.addLayout(drow)
+        self.dc_bar = BarGauge()
+        dcl.addWidget(self.dc_bar)
+        rp.addWidget(dc)
 
         # 空调卡片
         ac = QFrame()
@@ -374,6 +526,71 @@ class Dashboard(QMainWindow):
         self.z.sig_rk_event.connect(self._on_rk_event)
         self.z.start()
         self._cmd_ctx = zmq.Context()
+        self.poller = DashcamPoller(vox_config.get_float("dashboard.dashcam_poll_s", 5.0))
+        self.poller.sig_status.connect(self._on_dashcam)
+        self.poller.start()
+        self.player = StreamPlayer(vox_config.get("dashboard.preview_url",
+                                                  "rtsp://127.0.0.1:8554/live/dashcam"))
+        self.player.sig_frame.connect(self._on_frame)
+        self.player.sig_state.connect(self._on_stream_state)
+        self.player.start()
+        if os.environ.get("VOX_DASH_AUTOPREVIEW") == "1":
+            self._toggle_preview(force_on=True)
+
+    # ── 行车记录：状态轮询 / 预览渲染 / 按钮命令 ──
+
+    def _on_dashcam(self, p):
+        if p is None:
+            self.dash = {"online": False}
+            self.dc_state.setText("离线")
+            self.dc_state.setStyleSheet(f"color:{DANGER}; background:transparent; border:none;")
+            return
+        self.dash = dict(p, online=True)
+        rec = bool(p.get("recording"))
+        self.dc_state.setText("● 录像中" if rec else "○ 暂停")
+        self.dc_state.setStyleSheet(
+            f"color:{ACCENT2 if rec else WARN}; background:transparent; border:none;")
+        self.rec_btn.setText("● REC" if rec else "○ REC")
+        self.rec_btn.setStyleSheet(BTN_REC_ON if rec else BTN)
+        st = p.get("storage", {})
+        self.dc_fps.setText("%.1f fps" % p.get("pipeline_fps", 0.0))
+        self.dc_segs.setText("%d 段" % st.get("segments_total", 0))
+        self.dc_free.setText("%.1f GB 可用" % st.get("free_gb", 0.0))
+        self.dc_bar.setVal(st.get("used_percent", 0.0))
+
+    def _on_frame(self, img):
+        self.cam_view.setPixmap(QPixmap.fromImage(img))
+
+    def _on_stream_state(self, s):
+        if s == "live":
+            self.live_pill.setText("● LIVE")
+            self.live_pill.setStyleSheet(f"color:{ACCENT2}; background:transparent; border:none;")
+        elif s == "retry":
+            self.live_pill.setText("● 重连中")
+            self.live_pill.setStyleSheet(f"color:{WARN}; background:transparent; border:none;")
+            self.cam_view.setText("信号中断，重连中…")
+        else:  # off
+            self.live_pill.setText("○ 预览关")
+            self.live_pill.setStyleSheet(f"color:{T2}; background:transparent; border:none;")
+            self.cam_view.setText("预览未开启")
+
+    def _toggle_preview(self, force_on=False):
+        on = force_on or not self.player.enabled
+        self.player.set_enabled(on)
+        self.pv_btn.setText("预览 开" if on else "预览 关")
+        # 同步 RK 推流开关（经 tool_bus，与语音同路）；离线/超时静默，拉流端自会重连
+        self._cmd("dashcam", "preview_on" if on else "preview_off")
+
+    def _snap(self):
+        self._cmd("dashcam", "snapshot")
+        print("[dashcam] snapshot requested -> %s" %
+              vox_config.get("snapshot_dir", "$HOME/voxdrive_snapshots"), flush=True)
+
+    def _toggle_rec(self):
+        # 与语音同路：tool_bus dashcam 工具；命令后 poke 轮询器立即回读真实状态
+        on = self.dash.get("online") and not self.dash.get("recording")
+        self._cmd("dashcam", "record_on" if on else "record_off")
+        self.poller.poke()
 
     def _tick(self):
         self.clk.setText(datetime.datetime.now().strftime("%H:%M"))
@@ -435,11 +652,6 @@ class Dashboard(QMainWindow):
         d = int(s.get("seat_driver", 0))
         p = int(s.get("seat_passenger", 0))
         self.seat_lbl.setText(f"主{'●' + str(d) if d else '○'} | 副{'●' + str(p) if p else '○'}")
-        v = s.get("camera_view", "front")
-        self.cam_view.setText(VIEW_NAMES.get(v, v))
-        rec = s.get("camera_recording") in ("true", True)
-        self.rec_btn.setText("● REC" if rec else "○ REC")
-        self.rec_btn.setStyleSheet(BTN_REC_ON if rec else BTN)
 
     def _cmd(self, tool, action, **kw):
         """按钮命令 → tool_bus（2s 超时，失败静默——UI 不因后端缺席卡死）。"""
@@ -454,13 +666,13 @@ class Dashboard(QMainWindow):
         except zmq.ZMQError:
             pass
 
-    def _toggle_rec(self):
-        r = self.state.get("camera_recording") in ("true", True)
-        self._cmd("camera_capture", "record_off" if r else "record_on")
-
     def closeEvent(self, e):
         self.z.stop()
         self.z.wait(1000)
+        self.player.stop()
+        self.player.wait(3000)
+        self.poller.stop()
+        self.poller.wait(2000)
         e.accept()
 
 
@@ -472,7 +684,18 @@ def main():
     p.setColor(QPalette.Window, QColor(BG))
     p.setColor(QPalette.WindowText, QColor(T1))
     a.setPalette(p)
-    Dashboard().show()
+    win = Dashboard()
+    win.show()
+
+    # 无屏自测钩子：延时截图整窗（含预览帧/状态卡片）后自动退出
+    snap = os.environ.get("VOX_DASH_SNAPSHOT")
+    if snap:
+        def _grab():
+            win.grab().save(snap)
+            print(f"[dash-snapshot] saved {snap}", flush=True)
+            a.quit()
+        QTimer.singleShot(int(os.environ.get("VOX_DASH_SNAPSHOT_S", "12")) * 1000, _grab)
+
     sys.exit(a.exec_())
 
 

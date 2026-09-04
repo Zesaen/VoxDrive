@@ -15,6 +15,8 @@ TTS_LOG="/tmp/tts.log"
 TOOL_LOG="/tmp/tool_bus.log"
 ROUTER_LOG="/tmp/intent_router.log"
 DASH_LOG="/tmp/dashboard.log"
+MEDIAMTX_LOG="/tmp/mediamtx.log"
+MEDIAMTX_DIR="$(cd "$JETSON_DIR/.." && pwd)/third_party/mediamtx"
 
 # ---- conf 读取（key=value，'#' 注释，$HOME 展开）----
 conf_get() {
@@ -59,6 +61,8 @@ kill_existing() {
     for p in "$P_ROUTER" "$P_RAG" "$P_LLM" "$P_TOOL" "$P_TTS" "$P_TTS_BLOCK" "$P_TTS_PUB" "$P_LLAMA"; do
         kill_port "$p"
     done
+    # -x 按进程名精确匹配，避免 -f 误伤自身命令行；mediamtx 二进制随 PATH，用 kill_port 即可
+    kill_port "$(conf_get mediamtx.rtmp_port)"
     # -x 按进程名精确匹配，避免 -f 误伤自身命令行
     pkill -9 -x intent_router 2>/dev/null || true
     pkill -9 -f '[l]lm_server.py' 2>/dev/null || true
@@ -66,7 +70,17 @@ kill_existing() {
     pkill -9 -x tts_server 2>/dev/null || true
     pkill -9 -x tool_bus 2>/dev/null || true
     pkill -9 -x llama-server 2>/dev/null || true
+    pkill -9 -x mediamtx 2>/dev/null || true
     sleep 1
+}
+
+start_mediamtx() {
+    if [ ! -x "$MEDIAMTX_DIR/mediamtx" ]; then
+        printf '[SKIP] mediamtx 未部署（%s 缺失），预览推拉流不可用\n' "$MEDIAMTX_DIR/mediamtx"
+        return 0
+    fi
+    nohup "$MEDIAMTX_DIR/mediamtx" "$MEDIAMTX_DIR/mediamtx.yml" >"$MEDIAMTX_LOG" 2>&1 </dev/null &
+    wait_for_port "$(conf_get mediamtx.rtmp_port)" "mediamtx" 20
 }
 
 start_llama() {
@@ -153,9 +167,9 @@ start_dashboard() {
 
 print_status() {
     printf '\n[Ports]\n'
-    ss -tlnp 2>/dev/null | grep -E "$P_ROUTER|$P_RAG|$P_LLM|$P_TOOL|$P_TTS|$P_LLAMA" || true
+    ss -tlnp 2>/dev/null | grep -E "$P_ROUTER|$P_RAG|$P_LLM|$P_TOOL|$P_TTS|$P_LLAMA|$(conf_get mediamtx.rtmp_port)|$(conf_get mediamtx.rtsp_port)" || true
     printf '\n[Processes]\n'
-    pgrep -af 'llama-server|llm_server.py|rag_server.py|tts_server|tool_bus|intent_router|dashboard_ui' || true
+    pgrep -af 'llama-server|llm_server.py|rag_server.py|tts_server|tool_bus|intent_router|dashboard_ui|mediamtx' || true
     printf '\n[Logs]\n'
     for f in llama llm rag tts tool_bus intent_router dashboard; do
         printf '%-10s /tmp/%s.log\n' "$f" "$f"
@@ -164,6 +178,7 @@ print_status() {
 
 main() {
     kill_existing
+    start_mediamtx || true
     start_llama || exit 1
     start_llm || exit 1
     start_rag || exit 1
