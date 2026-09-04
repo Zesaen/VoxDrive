@@ -112,7 +112,7 @@ sequenceDiagram
     S->>Mic: ALSA 播报
 ```
 
-规则与语义两路意图识别；LLM 输出被约束为 `respond` / `tool_call` 两类 JSON，工具调用走"调用→回填→再生成"两段循环。跨板工具（录像/存储状态查询、抓拍、预览开关）由 tool_bus 经上述 ZMQ 双通道访问 RK 节点。
+规则与语义双路意图识别（语义通路=离线意图中心向量余弦，阈值留出探针实测校准；规则通路兜底并在紧急/指令/实时车况域优先）；LLM 输出被约束为 `respond` / `tool_call` 两类 JSON，工具调用走"调用→回填→再生成"两段循环。跨板工具（录像/存储状态查询、抓拍、预览开关）由 tool_bus 经上述 ZMQ 双通道访问 RK 节点。
 
 **行车记录仪（dashcam）域走确定性直通**：关键词命中即直接执行跨板工具，LLM 仅负责把真实工具结果组织成播报文本——不把真设备控制交给 1.5B 小模型在 7 个工具间选择（实测它会选错："关闭预览"→车窗全关、"还剩多少存储"→读 mock 传感器编数）。异常事件（水位删除/写失败/采集超时/推流中断）由 RK 经事件 PUB 上行，dashboard 订阅后弹告警横幅。
 
@@ -236,6 +236,8 @@ python3 ~/Desktop/VoxDrive/jetson/services/asr/stdin_asr.py
 | 异常事件→dashboard 告警（跨板 PUB/SUB） | RK 水位删除事件（`--watermark 40` 触发真实删除）经 :6701 PUB 上行，Jetson dashboard 订阅实时收到并弹告警横幅；事件信封含 file/segments_deleted/used_percent。注意两板时钟偏差 ~4.2s（Jetson 快），跨板延迟对账以信封 `timestamp_ms` 为准 | RK 服务日志与 dashboard 事件日志对账，2026-09-04 | 已实测 |
 | 语音端到端延迟（ASR→TTS 播报结束） | 分解（文本注入口径，4 条代表查询）：入口→router 应答 0.87-1.04s（关键词命中 <1ms + 跨板工具 RTT 2-10ms/抓拍 143ms + LLM 组织 0.86-1.07s）；TTS 合成+播放 6字句 2.68s / 15字句 4.49s（含音频时长本身）；**全程→play_end 3.55-5.47s**。ASR 引擎段（WAV 回放口径）：流式 zipformer int8 双线程 RTF 0.16-0.18（4.69s 音频纯解码 0.83s，模型加载 2.5s 一次性摊销），中英混识别正确；真实 mic 口径含 VAD 端点静音窗，需真人测试（未计入） | intent_router/tts 毫秒日志 + play_end PUB 事件 + sherpa-onnx CLI 计时，2026-09-04 | 已实测 |
 | 长稳快照（双板全栈联跑） | 16min：RK 管线 fps 稳定 30.00、29417 帧编码、frames_dropped=765 与"录像暂停"总时长精确对账（设计性丢弃）；RSS 稳定 recorder 53MB / tts 371MB / mediamtx 47MB / tool_bus 8MB；期间跨板查询/抓拍/预览/回归全部正常；离线注入故障（杀 RK）→ 5s 精确超时应答、总线存活、恢复即自愈 | 双板进程状态 + RK status 快照 + 日志对账，2026-09-04 | 已实测（过夜长稳挂起中） |
+| 语义双路路由（E1） | 留出探针正确率 **15/15**（5 类意图：EMERGENCY/EXPLICIT_CMD/FACTUAL/COMPLEX/CREATIVE；chinese-macbert 768d 意图中心余弦，运行时编码经 RAG embed 端点）；阈值实测校准 0.51-0.66；改述事实查询（关键词全 miss）走 RAG-only 快路径：**8.8-9.4s → 0.8-1.2s**；语义故障自动退化为规则单路 | `build_intent_centers.py --calibrate`（探针与构建样本不重叠）+ router REQ 打点 8 句验证，2026-09-04 | 已实测 |
+| RAG 真实车主手册语料 | BYD 汉 EV 官网车主手册 PDF（390 页，文本型）→ pypdf 页级提取 → 分块 577 块（目录页/目录型块/正文页眉行三级过滤）→ macbert CPU 编码入向量库；实测手册内改述句 top1 相似 0.487-0.498、手册外噪声句 0.39-0.472，据此定召回阈值 0.48；规格类查询（保养周期/胎压/电耗）直接命中真实手册内容 | `extract_manual_pdf.py` + `build_vector_db.py` 板上构建；相似度分布逐句实测，2026-09-04 | 已实测（语料板端部署不入库，仓库带 mock 语料可一键重建） |
 | 跨板查询往返延迟 | REQ rtt=2ms（Jetson tool_bus → RK recorder_service，ZMQ 消息信封，路由器当交换机同段） | `dashcam` 工具联测计时，2026-09-04 | 已实测 |
 | 跨板抓拍（JPEG over ZMQ） | 1080p JPEG ~195KB（NV12→mjpeg 软编 + base64 REQ/REP）跨板落盘 Jetson，`file` 验证有效图像；录像/预览开关状态回读一致 | `dashcam` 全动作联测，2026-09-04 | 已实测 |
 
@@ -253,7 +255,8 @@ python3 ~/Desktop/VoxDrive/jetson/services/asr/stdin_asr.py
 - [x] 语音闭环（dashcam 域关键词确定性直通：LLM 选工具不可靠→命中即执行，LLM 仅组织真实结果；6 类查询全通，控制类文本链路 0.43-0.53s）+ 异常事件 dashboard 告警横幅（水位删除事件实测触达）
 - [x] dashboard 拉流预览面板 + 录像/存储状态卡片（ffmpeg RTSP→Qt 渲染 + 5s 状态轮询 + 真设备按钮 + 离线告警）
 - [x] 端到端延迟分解实测（ASR 引擎 RTF 0.16-0.18 / 全程入口→播报结束 3.55-5.47s，见实测表）+ 长稳快照（16min 全栈联跑零异常，过夜长稳挂起）
-- [ ] 语义双路意图路由、RKNN 事件锁录（规划中）
+- [x] 语义双路意图路由真实现（E1：RAG embed 端点 + 意图中心余弦 + 双路融合；留出探针 15/15，改述句 RAG-only 快路径 9.4s→1.2s）+ RAG 真实车主手册语料（390 页 PDF→577 块向量库，板端构建）
+- [ ] RKNN 事件锁录（规划中）；主/子双码流、录像回放检索（可选）
 
 ## License
 
