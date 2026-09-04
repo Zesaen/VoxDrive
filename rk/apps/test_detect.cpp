@@ -30,6 +30,8 @@ int64_t steady_ns() {
       .count();
 }
 
+float box_thresh = 0.25f;  // --box-thresh 诊断用（低阈值验证解码通路）
+
 // NV12 带行距 → 紧凑拷贝（与 recorder_service 同逻辑）
 void pack_nv12(const vox::VideoFrame* f, std::vector<uint8_t>& out) {
   const int w = static_cast<int>(f->width), h = static_cast<int>(f->height);
@@ -54,6 +56,7 @@ int main(int argc, char** argv) {
     if (s == "--seconds" && i + 1 < argc) seconds = std::stod(argv[++i]);
     else if (s == "--interval" && i + 1 < argc) interval = std::stoi(argv[++i]);
     else if (s == "--all-classes") all_classes = true;
+    else if (s == "--box-thresh" && i + 1 < argc) box_thresh = std::stof(argv[++i]);
   }
   vox::config::load();
 
@@ -65,6 +68,7 @@ int main(int argc, char** argv) {
   cp.buffer_count = vox::config::get_int("rk.capture_buffers", 4);
 
   vox::RknnDetector::Params dp;
+  dp.box_thresh = box_thresh;
   dp.model_path =
       vox::config::get("rk.detect_model", "$HOME/Desktop/VoxDrive/models/yolov5s-640-640.rknn");
   if (!all_classes) {
