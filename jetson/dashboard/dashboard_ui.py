@@ -540,10 +540,14 @@ class Dashboard(QMainWindow):
     # ── 行车记录：状态轮询 / 预览渲染 / 按钮命令 ──
 
     def _on_dashcam(self, p):
+        was_online = self.dash.get("online", False)
         if p is None:
             self.dash = {"online": False}
             self.dc_state.setText("离线")
             self.dc_state.setStyleSheet(f"color:{DANGER}; background:transparent; border:none;")
+            if was_online:  # 在线→离线跳变弹告警（进程崩溃/断网对座舱是异常事件）
+                self._alert(DANGER, "rgba(255,23,68,0.16)",
+                            "行车记录仪离线：状态查询无应答")
             return
         self.dash = dict(p, online=True)
         rec = bool(p.get("recording"))
@@ -612,6 +616,16 @@ class Dashboard(QMainWindow):
                 self.slbl[sv].setStyleSheet(
                     "color:#445; background:transparent; border:none; font-size:10px;")))
 
+    def _alert(self, border, bg, text):
+        """异常告警横幅：显示话术+时间，8s 后自动收回。"""
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        self.alert.setText(f"⚠ {text}（{ts}）")
+        self.alert.setStyleSheet(
+            f"color:{T1}; background:{bg}; border:1px solid {border}; "
+            f"border-radius:8px; padding:6px 14px;")
+        self.alert.show()
+        self.alert_timer.start(8000)
+
     def _on_rk_event(self, m):
         """RK 行车记录事件（消息信封 type=event）：异常事件弹横幅，全量打 stdout 日志。
 
@@ -628,14 +642,9 @@ class Dashboard(QMainWindow):
               f"{json.dumps(p.get('detail', {}), ensure_ascii=False)}", flush=True)
         spec = ALERTS.get(ev)
         if not spec:
-            return
+            return  # segment_* 等信息类事件不弹横幅
         bg, border, text = spec
-        self.alert.setText(f"⚠ {text}（{ts}）")
-        self.alert.setStyleSheet(
-            f"color:{T1}; background:{bg}; border:1px solid {border}; "
-            f"border-radius:8px; padding:6px 14px;")
-        self.alert.show()
-        self.alert_timer.start(8000)
+        self._alert(border, bg, text)
 
     def _rf(self):
         s = self.state

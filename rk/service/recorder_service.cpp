@@ -353,9 +353,15 @@ int main(int argc, char** argv) {
     } else {
       reply_payload = {{"error", "unknown cmd"}};
     }
-    server.send(vox::msg::make(cmd == "snapshot" ? vox::msg::kTypeSnapshot
-                                                 : vox::msg::kTypeStatus,
-                               "rk.recorder", reply_payload).dump());
+    try {
+      server.send(vox::msg::make(cmd == "snapshot" ? vox::msg::kTypeSnapshot
+                                                   : vox::msg::kTypeStatus,
+                                 "rk.recorder", reply_payload)
+                      .dump());
+    } catch (const std::exception& e) {
+      // 应答失败（对端REQ先消失等）不得终止控制线程；REP 状态机由 ZMQ 侧复位
+      VOX_ERROR("应答发送失败: %s", e.what());
+    }
   }
 
   pipeline.join();

@@ -96,7 +96,19 @@ int main() {
             continue;
         }
 
-        const std::string result = it->second->execute(action, to_params(req));
+        // 单个工具的任何异常（跨板对端崩溃/超时/编码）都不许卡死总线：
+        // 必须给出错误应答回到 REP 循环（实测教训：未兜底时一个挂起的跨板 REQ
+        // 把整个 tool_bus 楔死，语音/按钮全部无响应）
+        std::string result;
+        try {
+            result = it->second->execute(action, to_params(req));
+        } catch (const std::exception& e) {
+            result = std::string("工具执行异常: ") + e.what();
+            VOX_ERROR("tool %s 异常: %s", tool_name.c_str(), e.what());
+        } catch (...) {
+            result = "工具执行异常（未知类型）";
+            VOX_ERROR("tool %s 未知异常", tool_name.c_str());
+        }
         const nlohmann::json state_changes = state.drain_changes_json();
 
         if (!state_changes.empty()) {

@@ -53,8 +53,10 @@ public:
         std::string reply;
         try {
             reply = client.request(vox::msg::make(req_type, "jetson.tool_bus", payload).dump());
-        } catch (const zmq_component::ZmqCommunicationError&) {
-            return "行车记录仪离线（" + ip + " 无应答）";
+        } catch (const std::exception& e) {
+            // 离线/超时/任何 ZMQ 异常（kit 已转译为 ZmqCommunicationError）：
+            // 以明确话术应答，LLM 可据此向用户解释；绝不向上抛卡死总线
+            return std::string("行车记录仪无应答（") + e.what() + "）";
         }
         const double rtt_ms = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - t0).count();
