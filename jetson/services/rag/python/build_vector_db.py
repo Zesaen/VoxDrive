@@ -29,6 +29,15 @@ import numpy as np
 
 SENT_SPLIT = re.compile(r"(?<=[。！？；])")
 TOC_LINE = re.compile(r".{2,30}\.{2,}\s*\d{1,3}\s*$")
+# 页眉行："6-2 定期保养 347" / "6 保养及维护"（正文页每页重复，提取时混入文本；
+# 数字开头/孤立章标题、无句末标点——正文完整句不会命中）
+HEADER_LINE = re.compile(
+    r"^(\d{1,2}(-\d{1,2})?\s*[\u4e00-\u9fff][^。！？]{0,26}\s*\d{1,4}|\d{1,2}\s+[\u4e00-\u9fff]{2,15})$")
+
+
+def strip_page_headers(text: str) -> str:
+    return "\n".join(ln for ln in text.splitlines()
+                     if not HEADER_LINE.match(ln.strip()))
 
 
 def is_toc_chunk(chunk: str) -> bool:
@@ -164,7 +173,8 @@ def build_from_jsonl(path, max_chars, toc_pages):
     for rec in pages:
         if rec["page"] in toc_range:  # 主目录页本身不入库
             continue
-        for c in chunk_paragraphs(rec["text"].splitlines(), max_chars):
+        page_text = strip_page_headers(rec["text"])
+        for c in chunk_paragraphs(page_text.splitlines(), max_chars):
             if is_toc_chunk(c):  # 章首迷你目录块：召回它们只会得到"标题+页码"
                 dropped_toc += 1
                 continue
