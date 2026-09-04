@@ -157,9 +157,10 @@ bool RknnDetector::start(const Params& p) {
     rknn_tensor_attr attr{};
     attr.index = i;
     rknn_query(ctx, RKNN_QUERY_OUTPUT_ATTR, &attr, sizeof(attr));
-    // 布局 [3*(5+C)][H][W]：dims[0]=通道（被 3 整除），dims[1]=grid_h
-    const int ch = attr.dims[0];
-    const int grid_h = attr.dims[1];
+    // 布局 [3*(5+C)][H][W] 或带 batch 维 [1][3*(5+C)][H][W]（本板模型实测后者）；
+    // dims[0]==1 视为 NCHW 批次形式，取 dims[1]=通道、dims[2]=grid_h
+    const int ch = (attr.dims[0] == 1) ? attr.dims[1] : attr.dims[0];
+    const int grid_h = (attr.dims[0] == 1) ? attr.dims[2] : attr.dims[1];
     if (ch <= 0 || ch % 3 != 0 || model_h_ % grid_h != 0) {
       error_ = "输出布局与预期不符（dims0=" + std::to_string(attr.dims[0]) +
                " dims1=" + std::to_string(attr.dims[1]) + "）";
