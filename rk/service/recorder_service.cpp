@@ -228,7 +228,7 @@ int main(int argc, char** argv) {
       {
         std::lock_guard<std::mutex> lk(snap.mu);
         if (snap.pending) {
-          snap.jpeg = encode_jpeg_nv12(
+          snap.jpeg = vox::encode_jpeg_nv12(
               static_cast<const uint8_t*>(f->plane[0]),
               static_cast<const uint8_t*>(f->plane[1]), f->width, f->height,
               static_cast<int>(f->plane_stride[0]),
