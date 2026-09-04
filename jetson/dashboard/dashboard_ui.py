@@ -22,7 +22,18 @@ import time
 JETSON_ROOT = pathlib.Path(__file__).resolve().parents[1]  # dashboard/ → jetson/
 sys.path.insert(0, str(JETSON_ROOT))
 
-import zmq  # noqa: E402
+# 解释器护栏：zmq/PyQt5 装在系统 python3（apt），conda shell 里 python3 指向
+# miniconda 时自动重 exec 到 /usr/bin/python3（环境变量防二次 exec 循环）
+try:
+    import zmq  # noqa: E402
+    import PyQt5  # noqa: E402,F401
+except ModuleNotFoundError:
+    if os.environ.pop("_VOX_SYS_PY", None) is None:
+        os.environ["_VOX_SYS_PY"] = "1"
+        os.execv("/usr/bin/python3",
+                 ["/usr/bin/python3", str(pathlib.Path(__file__).resolve())] + sys.argv[1:])
+    raise
+
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal  # noqa: E402
 from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPalette, QPixmap  # noqa: E402
 from PyQt5.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow,  # noqa: E402
