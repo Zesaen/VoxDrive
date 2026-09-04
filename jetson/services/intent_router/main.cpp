@@ -7,14 +7,16 @@
 //   入：纯文本 query；出：命中路径下游服务的应答 JSON 原样透传
 //   TTS 异步推送："<JSON转义文本> END"（TTS 以 " END" 为单条播报结束标记）
 //
-// 语义路由钩子（E1 待接）：classify_query 目前仅规则通路；语义通路（意图中心向量
-// 余弦兜底）接口预留于 semantic_router.h + build_intent_centers.py，接入时不动本文件主流程。
+// 语义路由（E1 已接）：classify_query 双路融合——语义通路（意图中心余弦，编码经
+// RAG embed 端点）+ 规则通路（关键词打分）兜底；意图中心文件由
+// build_intent_centers.py 离线生成，conf router.intent_centers 指定，缺失则仅规则单路。
 #define VOX_LOG_TAG "intent_router"
 #include "../../common/vox_log.h"
 #include "../../common/vox_config.h"
 #include "../../common/json.hpp"
 
 #include "query_classifier.h"
+#include "semantic_router.h"
 #include "ZmqClient.h"
 #include "ZmqPub.h"
 #include "ZmqServer.h"
@@ -241,6 +243,43 @@ int main() {
     zmq_component::ZmqClient rag_client(vox::config::connect_endpoint("port.rag", "6667"));
     zmq_component::ZmqClient llm_client(vox::config::connect_endpoint("port.llm", "6668"));
     zmq_component::ZmqClient tool_client(vox::config::connect_endpoint("port.tool_bus", "6669"));
+
+    // ── 语义通路接线（E1 双路路由）：意图中心 + 查询编码 ──
+    // 编码走 RAG 服务 embed 端点；每次请求新建 ZmqClient：REQ 状态机被超时破坏后
+    // 下次调用可自愈（复用被毒化的 socket 会 EFSM），且 2s 短超时保证编码故障
+    // 只拖慢单条查询、不阻塞主循环（失败=语义通路返回 UNKNOWN，规则单路兜底）。
+    edge_llm_rag::SemanticRouter semantic_router;
+    const std::string centers_path = vox::config::get("router.intent_centers", "");
+    bool semantic_ready = false;
+    if (centers_path.empty() || !semantic_router.load_from_file(centers_path)) {
+        VOX_WARN("意图中心未加载（%s）——语义通路禁用，仅规则单路",
+                 centers_path.empty() ? "conf 未配置 router.intent_centers"
+                                      : centers_path.c_str());
+    } else if (vox::config::get("router.semantic_enabled", "1") == "0") {
+        VOX_WARN("router.semantic_enabled=0 ——语义通路被 conf 关闭");
+    } else {
+        semantic_ready = true;
+    }
+    if (semantic_ready) {
+        std::string names;
+        for (const auto& i : semantic_router.intents_view()) names += i.name + " ";
+        VOX_INFO("[semantic] %zu intents (dim=%d): %s", semantic_router.intent_count(),
+                 semantic_router.dim(), names.c_str());
+    }
+    auto encode_via_rag = [ep = vox::config::connect_endpoint("port.rag", "6667")](
+                              const std::string& q) -> std::vector<float> {
+        zmq_component::ZmqClient c(ep);
+        c.setTimeout(2000);
+        std::string resp = c.request(
+            nlohmann::json{{"op", "embed"}, {"text", q}}.dump());
+        auto j = jparse(resp);
+        if (!j.is_object()) return {};
+        auto it = j.find("vector");
+        if (it == j.end() || !it->is_array()) return {};
+        return it->get<std::vector<float>>();
+    };
+    if (semantic_ready) classifier.attach_semantic(&semantic_router, encode_via_rag);
+
     VOX_INFO("listening %s, pub %s",
              vox::config::bind_endpoint("port.intent_router", "").c_str(),
              vox::config::bind_endpoint("port.intent_router_pub", "").c_str());

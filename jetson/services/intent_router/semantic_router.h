@@ -65,13 +65,20 @@ namespace edge_llm_rag
         /// 获取已注册意图数
         size_t intent_count() const { return intents_.size(); }
 
-        /// 从二进制文件加载意图中心 (build_intent_centers.py 产出)
-        /// 文件格式: [int32 num] for each: [int32 name_len][char* name][int32 priority][float thr][float*768 center]
-        bool load_from_file(const std::string &path);
+        /// 只读访问意图表（启动日志/调试用）
+        const std::vector<IntentRoute> &intents_view() const { return intents_; }
+
+    /// 从二进制文件加载意图中心 (build_intent_centers.py 产出)
+    /// 文件格式: [int32 num][int32 dim] for each: [int32 name_len][char* name][int32 priority][float thr][float*dim center]
+    bool load_from_file(const std::string &path);
+
+    /// 意图中心向量维度（未加载=0）
+    int dim() const { return dim_; }
 
     private:
-        std::vector<IntentRoute> intents_;
-        bool                     enabled_ = true;
+    std::vector<IntentRoute> intents_;
+    int                      dim_    = 0;
+    bool                     enabled_ = true;
 
         /// 计算两个向量的余弦相似度
         static float cosine_similarity(const std::vector<float> &a,
@@ -163,12 +170,20 @@ namespace edge_llm_rag
         if (num_intents <= 0 || num_intents > 100)
             return false;
 
+        int32_t dim = 0;
+        file.read(reinterpret_cast<char *>(&dim), sizeof(int32_t));
+        if (dim < 64 || dim > 1024)
+            return false;
+
         intents_.clear();
+        dim_ = dim;
         for (int i = 0; i < num_intents; ++i)
         {
             // 读取 name
             int32_t name_len = 0;
             file.read(reinterpret_cast<char *>(&name_len), sizeof(int32_t));
+            if (name_len <= 0 || name_len > 64)
+                return false;
             std::string name(name_len, '\0');
             file.read(name.data(), name_len);
 
@@ -178,9 +193,10 @@ namespace edge_llm_rag
             file.read(reinterpret_cast<char *>(&priority),  sizeof(int32_t));
             file.read(reinterpret_cast<char *>(&threshold), sizeof(float));
 
-            // 读取 center vector (768 floats)
-            std::vector<float> center(768);
-            file.read(reinterpret_cast<char *>(center.data()), 768 * sizeof(float));
+            // 读取 center vector (dim floats)
+            std::vector<float> center(static_cast<size_t>(dim));
+            file.read(reinterpret_cast<char *>(center.data()),
+                      static_cast<std::streamsize>(dim) * sizeof(float));
 
             if (!file.good())
                 return false;

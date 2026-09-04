@@ -4,9 +4,12 @@
 #include <vector>
 #include <unordered_map>
 #include <memory>
+#include <functional>
 
 namespace edge_llm_rag
 {
+
+class SemanticRouter;
 
     // ── 查询特征（保留原4维 + 新增指令维度）────────────────────
     struct QueryFeatures
@@ -37,13 +40,13 @@ namespace edge_llm_rag
             UNKNOWN_QUERY        // 兜底        → RAG → LLM → TTS
         };
 
-        QueryType   query_type;
-        float       confidence;
+        QueryType   query_type = UNKNOWN_QUERY;
+        float       confidence = 0.0f;
         std::string reasoning;
-        bool        requires_immediate_response;
-        bool        needs_rag_context;     // ← 新增: 是否需要 RAG 注入
-        bool        needs_llm;             // ← 新增: 是否需要 LLM
-        bool        allows_tool_call;      // ← 新增: 是否允许 LLM 回调 Tool
+        bool        requires_immediate_response = false;
+        bool        needs_rag_context = false;     // ← 新增: 是否需要 RAG 注入
+        bool        needs_llm = false;             // ← 新增: 是否需要 LLM
+        bool        allows_tool_call = false;      // ← 新增: 是否允许 LLM 回调 Tool
     };
 
     // ── 路由配置（查询 → 路径）───────────────────────────────
@@ -81,6 +84,11 @@ namespace edge_llm_rag
         /// 获取语义路由置信度 (用于调试)
         float get_last_semantic_confidence() const;
 
+        /// E1 接线：注入意图中心路由器 + 查询编码函数（编码经 RAG 服务 embed 端点）
+        /// 未注入或编码失败时 classify_by_semantic 返回 UNKNOWN，规则单路兜底
+        void attach_semantic(SemanticRouter *router,
+                             std::function<std::vector<float>(const std::string &)> encode);
+
     private:
         std::unordered_map<std::string, std::vector<std::string>> keyword_dict_;
 
@@ -109,6 +117,8 @@ namespace edge_llm_rag
 
         bool   semantic_enabled_ = true;
         float  last_semantic_confidence_ = 0.0f;
+        SemanticRouter *semantic_router_ = nullptr;                       // 不拥有
+        std::function<std::vector<float>(const std::string &)> encode_fn_;
     };
 
 } // namespace edge_llm_rag

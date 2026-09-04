@@ -49,6 +49,20 @@ def main():
 
     while True:
         query = sock.recv_string()
+
+        # encode 操作（E1 语义路由用）：{"op":"embed","text":...} → {"dim":D,"vector":[...]}
+        # 普通检索请求是纯文本，不会以 '{"op"' 开头，两者共用一个 REP 端口
+        if query.startswith('{"op"'):
+            try:
+                req = json.loads(query)
+            except ValueError:
+                req = None
+            if isinstance(req, dict) and req.get("op") == "embed":
+                vec = searcher.model.encode([str(req.get("text", ""))])[0]
+                sock.send_string(json.dumps(
+                    {"dim": int(vec.shape[0]), "vector": [float(x) for x in vec]}))
+                continue
+
         log.info("query: %s", query)
 
         results = searcher.search(query, top_k=top_k, threshold=threshold)

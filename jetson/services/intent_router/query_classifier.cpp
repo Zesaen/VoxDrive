@@ -136,46 +136,91 @@ namespace edge_llm_rag
     }
 
     // ═══════════════════════════════════════════════════════════
-    // 通路 A: Semantic Router (占位 — 实际需接入 embedding)
+    // 通路 A: Semantic Router（E1 真实现：query 编码 → 意图中心余弦 → 类型）
     // ═══════════════════════════════════════════════════════════
 
-    QueryClassification QueryClassifier::classify_by_semantic(
-        const std::string & /*query*/)
+    void QueryClassifier::attach_semantic(
+        SemanticRouter *router,
+        std::function<std::vector<float>(const std::string &)> encode)
+    {
+        semantic_router_ = router;
+        encode_fn_       = std::move(encode);
+    }
+
+    QueryClassification QueryClassifier::classify_by_semantic(const std::string &query)
     {
         QueryClassification cls;
-        cls.query_type   = QueryClassification::UNKNOWN_QUERY;
-        cls.confidence   = 0.0f;
-        cls.reasoning    = "Semantic: 未启用或无 embedding 引擎";
 
-        // ── TODO: 接入实际 embedding ──────────────────────────
-        //  1. 调用 pybind11: searcher.attr("encode")(query)
-        //     或 ONNX Runtime 推理 bge-small-zh
-        //  2. 将 query_embedding 传入 SemanticRouter::route()
-        //  3. 映射意图名 → QueryType:
-        //     "EMERGENCY"      → EMERGENCY_QUERY
-        //     "FACTUAL"        → FACTUAL_QUERY
-        //     "EXPLICIT_CMD"   → EXPLICIT_COMMAND
-        //     "COMPLEX"        → COMPLEX_QUERY
-        //     "CREATIVE"       → CREATIVE_QUERY
-        //
-        //  示例:
-        //  std::vector<float> emb = encode_query(query);
-        //  SemanticRouter router;
-        //  router.load_intents(load_from_file("intent_centers.bin"));
-        //  SemanticResult result = router.route(emb);
-        //  if (result.matched) {
-        //      cls.query_type = map_name_to_type(result.intent_name);
-        //      cls.confidence = result.confidence;
-        //      cls.reasoning  = "Semantic: " + result.intent_name
-        //                       + " conf=" + std::to_string(result.confidence);
-        //  }
-        //
-        //  intent_centers.bin 生成方式 (离线):
-        //  python scripts/build_intent_centers.py
-        //      --model models/   (chinese-macbert-base)
-        //      --output intent_router/intent_centers.bin
-        //      --intents emergency.txt factual.txt explicit_cmd.txt ...
+        if (!semantic_enabled_ || semantic_router_ == nullptr || !encode_fn_)
+        {
+            cls.reasoning = "Semantic: 未接线（无意图中心或未注入编码函数）";
+            return cls;
+        }
 
+        std::vector<float> embedding;
+        try
+        {
+            embedding = encode_fn_(query);
+        }
+        catch (...)
+        {
+            embedding.clear();
+        }
+        if (embedding.empty())
+        {
+            cls.reasoning = "Semantic: encode 失败（RAG embed 端点无应答）";
+            return cls;
+        }
+
+        SemanticResult result = semantic_router_->route(embedding);
+        last_semantic_confidence_ = result.confidence;
+
+        static const std::unordered_map<std::string, QueryClassification::QueryType> kNameToType = {
+            {"EMERGENCY",    QueryClassification::EMERGENCY_QUERY},
+            {"FACTUAL",      QueryClassification::FACTUAL_QUERY},
+            {"EXPLICIT_CMD", QueryClassification::EXPLICIT_COMMAND},
+            {"COMPLEX",      QueryClassification::COMPLEX_QUERY},
+            {"CREATIVE",     QueryClassification::CREATIVE_QUERY},
+        };
+        auto it = kNameToType.find(result.intent_name);
+        if (!result.matched || it == kNameToType.end())
+        {
+            cls.reasoning = "Semantic: top1=" + result.intent_name +
+                            " conf=" + std::to_string(result.confidence).substr(0, 4) +
+                            " 未过阈值";
+            return cls;
+        }
+
+        cls.query_type = it->second;
+        cls.confidence = result.confidence;
+        switch (cls.query_type)
+        {
+        case QueryClassification::EMERGENCY_QUERY:
+            cls.requires_immediate_response = true;
+            cls.needs_rag_context = true;
+            break;
+        case QueryClassification::FACTUAL_QUERY:
+            cls.needs_rag_context = true;
+            break;
+        case QueryClassification::EXPLICIT_COMMAND:
+            cls.requires_immediate_response = true;
+            cls.needs_llm         = true;   // 指令走 LLM(agent) 选工具，不经 RAG
+            cls.allows_tool_call  = true;
+            break;
+        case QueryClassification::COMPLEX_QUERY:
+            cls.needs_rag_context = true;
+            cls.needs_llm         = true;
+            cls.allows_tool_call  = true;
+            break;
+        case QueryClassification::CREATIVE_QUERY:
+            cls.needs_llm         = true;
+            cls.allows_tool_call  = true;
+            break;
+        default:
+            break;
+        }
+        cls.reasoning = "Semantic: " + result.intent_name +
+                        " conf=" + std::to_string(result.confidence).substr(0, 4);
         return cls;
     }
 

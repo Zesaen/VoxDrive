@@ -17,9 +17,13 @@ docs/internal/
 *.rknn
 *.npy
 *.pkl
-# 例外：RAG 向量库（138KB 工程产物，随代码走）
-!jetson/services/rag/python/vector_db/*.npy
-!jetson/services/rag/python/vector_db/*.pkl
+# RAG 向量库 = build_vector_db.py 板端产物（真实车主手册语料有版权，不入库；
+# 仓库带 mock 语料 vehicle_manual_data.txt，克隆后用脚本一键重建）
+jetson/services/rag/python/vector_db/
+# 语义路由意图中心 = 板端产物（与嵌入模型绑定）
+jetson/services/intent_router/intent_centers.bin
+# 手册 PDF/提取中间产物（版权+大文件，板端部署走 models_manifest.md）
+.tmp_manual/
 
 # ================= 构建产物 =================
 build/

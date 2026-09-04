@@ -1,34 +1,31 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""离线构建语义路由意图中心文件（intent_centers.bin）。
+
+用法（板上，用 conf 的嵌入模型，与 RAG 运行时编码一致）:
+  /usr/bin/python3 build_intent_centers.py \
+      --model $HOME/Desktop/VoxDrive/models/embedding \
+      --output intent_centers.bin \
+      --calibrate
+
+产物格式（semantic_router.h load_from_file 对应）:
+  [int32 num][int32 dim]
+  每个意图: [int32 name_len][utf-8 name][int32 priority][float threshold][float*dim center]
+
+--calibrate：用与构建样本不重叠的留出探针句实测各类命中相似度，
+输出建议阈值（min 正确命中 - 0.03 余量）并写入 bin。
+阈值是实测校准值——不用 INTENT_SAMPLES 里的手写初值。
 """
-离线构建意图中心向量文件
-
-用法:
-    python build_intent_centers.py \
-        --model ../automotive_edge_rag/models \
-        --output intent_centers.bin \
-        --dim 768
-
-产物 intent_centers.bin 格式:
-    [int32] num_intents
-    对每个 intent:
-        [int32] name_len
-        [char*] name
-        [int32] priority
-        [float] threshold
-        [float*768] center vector
-"""
-
-import struct
 import argparse
+import struct
+
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-
-# ── 意图模板: 每个意图 5-10 句示例 ──────────────────────────
+# ── 意图模板: 每类构建样本（中心向量用） ──────────────────────
 INTENT_SAMPLES = {
     "EMERGENCY": {
         "priority": 0,    # 最高优先级 (0 = 不可被覆盖)
-        "threshold": 0.3, # 低阈值 (宁误报不可漏报)
         "samples": [
             "发动机故障灯亮了怎么办",
             "刹车失灵了",
@@ -44,7 +41,6 @@ INTENT_SAMPLES = {
     },
     "EXPLICIT_CMD": {
         "priority": 1,
-        "threshold": 0.5,
         "samples": [
             "打开空调",
             "关闭车窗",
@@ -65,7 +61,6 @@ INTENT_SAMPLES = {
     },
     "FACTUAL": {
         "priority": 2,
-        "threshold": 0.4,
         "samples": [
             "保养周期是多少公里",
             "轮胎气压应该打到多少",
@@ -83,7 +78,6 @@ INTENT_SAMPLES = {
     },
     "COMPLEX": {
         "priority": 3,
-        "threshold": 0.4,
         "samples": [
             "发动机有异响可能是什么原因怎么排查",
             "油耗突然增加了不少可能是什么问题",
@@ -97,7 +91,6 @@ INTENT_SAMPLES = {
     },
     "CREATIVE": {
         "priority": 4,
-        "threshold": 0.4,
         "samples": [
             "推荐附近好玩的景点",
             "讲个笑话",
@@ -113,62 +106,121 @@ INTENT_SAMPLES = {
     },
 }
 
+# ── 留出探针（不与构建样本重复）：校准阈值 + 验收正确率 ──────
+INTENT_PROBES = {
+    "EMERGENCY": [
+        "刹车 warning 灯亮了还能开吗",
+        "方向盘突然变得很沉怎么办",
+        "水温报警了",
+    ],
+    "EXPLICIT_CMD": [
+        "把空调打开",
+        "帮我把车窗关上",
+        "来点音乐",
+    ],
+    "FACTUAL": [
+        "这车百公里耗几个油",
+        "多久做一次首保",
+        "雨刮器多久换一次",
+        "玻璃水该加哪一种",
+    ],
+    "COMPLEX": [
+        "起步的时候车身为什么会抖",
+        "开空调以后动力变弱正常吗",
+    ],
+    "CREATIVE": [
+        "路上太无聊了说点有趣的",
+        "推荐个自驾游的路线",
+        "讲个段子听听",
+    ],
+}
 
-def build_centers(model: SentenceTransformer, dim: int) -> dict:
-    """为每个意图计算中心向量 (所有示例句编码后的均值)"""
+# 手写阈值仅作初值（无 --calibrate 时用）；校准后以实测值覆盖
+INITIAL_THRESHOLDS = {"EMERGENCY": 0.35, "EXPLICIT_CMD": 0.5,
+                      "FACTUAL": 0.45, "COMPLEX": 0.4, "CREATIVE": 0.4}
+
+
+def build_centers(model):
     centers = {}
-    for intent_name, cfg in INTENT_SAMPLES.items():
-        embeddings = model.encode(cfg["samples"])
-        center = embeddings.mean(axis=0)
-        # L2 归一化
+    for name, cfg in INTENT_SAMPLES.items():
+        emb = model.encode(cfg["samples"])
+        center = emb.mean(axis=0)
         norm = np.linalg.norm(center)
         if norm > 0:
             center /= norm
-        centers[intent_name] = {
-            "center":    center.astype(np.float32),
-            "priority":  cfg["priority"],
-            "threshold": cfg["threshold"],
-        }
-        print(f"  {intent_name}: {len(cfg['samples'])} samples, "
-              f"center dim={center.shape}, norm={np.linalg.norm(center):.4f}")
+        centers[name] = center.astype(np.float32)
+        print(f"  center {name}: {len(cfg['samples'])} samples")
     return centers
 
 
-def save_centers(centers: dict, output_path: str):
-    """保存为 C++ 可读取的二进制格式"""
-    with open(output_path, "wb") as f:
-        f.write(struct.pack("<i", len(centers)))
-        for name, data in centers.items():
-            name_bytes = name.encode("utf-8")
-            f.write(struct.pack("<i", len(name_bytes)))
-            f.write(name_bytes)
-            f.write(struct.pack("<i", data["priority"]))
-            f.write(struct.pack("<f", data["threshold"]))
-            f.write(data["center"].tobytes())
-    print(f"\nSaved {len(centers)} intent centers to: {output_path}")
+def calibrate(model, centers):
+    """探针句逐类实测 top-1 命中相似度 → 每类建议阈值。"""
+    thresholds = {}
+    all_correct = 0
+    total = 0
+    print("\n=== 校准（留出探针） ===")
+    for name in INTENT_SAMPLES:
+        sims = {n: [] for n in INTENT_SAMPLES}
+        for probe in INTENT_PROBES[name]:
+            vec = model.encode([probe])[0]
+            vec = vec / (np.linalg.norm(vec) + 1e-12)
+            scored = sorted(((float(np.dot(vec, c)), n) for n, c in centers.items()),
+                            reverse=True)
+            top_sim, top_name = scored[0]
+            sims[top_name].append(top_sim)
+            correct = top_name == name
+            all_correct += correct
+            total += 1
+            mark = "OK " if correct else "MISS"
+            second = f" (次高 {scored[1][1]} {scored[1][0]:.3f})" if not correct else ""
+            print(f"  [{mark}] {name} <- '{probe}' top1={top_name} {top_sim:.3f}{second}")
+        correct_sims = sims[name]
+        if correct_sims:
+            thresholds[name] = max(0.35, round(min(correct_sims) - 0.03, 3))
+        else:
+            thresholds[name] = INITIAL_THRESHOLDS[name]
+            print(f"  [WARN] {name} 无正确命中，保留初值 {thresholds[name]}")
+    print(f"\n探针正确率: {all_correct}/{total}")
+    print("建议阈值:", {k: thresholds[k] for k in INTENT_SAMPLES})
+    return thresholds, all_correct, total
+
+
+def save(centers, thresholds, output):
+    dim = len(next(iter(centers.values())))
+    with open(output, "wb") as f:
+        f.write(struct.pack("<ii", len(centers), dim))
+        for name, center in centers.items():
+            cfg = INTENT_SAMPLES[name]
+            nb = name.encode("utf-8")
+            f.write(struct.pack("<i", len(nb)))
+            f.write(nb)
+            f.write(struct.pack("<if", cfg["priority"], thresholds[name]))
+            f.write(center.tobytes())
+    print(f"\nSaved {len(centers)} intents (dim={dim}) -> {output}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="构建意图中心向量")
-    parser.add_argument("--model", required=True, help="SentenceTransformer 模型路径")
-    parser.add_argument("--output", default="intent_centers.bin")
-    parser.add_argument("--dim", type=int, default=768)
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="构建语义路由意图中心")
+    ap.add_argument("--model", required=True, help="SentenceTransformer 模型路径")
+    ap.add_argument("--output", default="intent_centers.bin")
+    ap.add_argument("--calibrate", action="store_true",
+                    help="用留出探针实测阈值并写入（不指定则用手写初值）")
+    args = ap.parse_args()
 
     print(f"Loading model: {args.model}")
-    model = SentenceTransformer(args.model)
+    model = SentenceTransformer(args.model, device="cpu")
 
-    print("\nBuilding intent centers...")
-    centers = build_centers(model, args.dim)
+    print("Building intent centers...")
+    centers = build_centers(model)
 
-    save_centers(centers, args.output)
+    if args.calibrate:
+        thresholds, ok, total = calibrate(model, centers)
+        if total and ok < total * 0.6:
+            print("[WARN] 探针正确率 < 60%，建议先扩充样本再上线")
+    else:
+        thresholds = {n: INITIAL_THRESHOLDS[n] for n in INTENT_SAMPLES}
 
-    # 打印统计
-    print("\n=== Intent Center Statistics ===")
-    for name in sorted(centers, key=lambda n: centers[n]["priority"]):
-        c = centers[name]
-        print(f"  {name:20s}  pri={c['priority']}  thr={c['threshold']}"
-              f"  range=[{c['center'].min():.4f}, {c['center'].max():.4f}]")
+    save(centers, thresholds, args.output)
 
 
 if __name__ == "__main__":
