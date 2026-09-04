@@ -208,7 +208,9 @@ std::vector<Detection> RknnDetector::detect_nv12(const uint8_t* nv12, int src_w,
       wrapbuffer_virtualaddr(rgb_.data(), model_w_, model_h_, RK_FORMAT_RGB_888);
   IM_STATUS s1 = imresize(rga_src, rga_mid);
   IM_STATUS s2 = imcvtcolor(rga_mid, rga_rgb, RK_FORMAT_YCbCr_420_SP, RK_FORMAT_RGB_888);
-  if (s1 != IM_STATUS_NOERROR || s2 != IM_STATUS_NOERROR) {
+  // 本枚举 NOERROR=2 / SUCCESS=1 / 失败≤0（FAILED=0，负数为各类错误）
+  const bool rga_ok = s1 > 0 && s2 > 0;
+  if (!rga_ok) {
     VOX_ERROR("RGA 失败: resize=%d cvt=%d", static_cast<int>(s1), static_cast<int>(s2));
     return out;
   }

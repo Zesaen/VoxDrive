@@ -136,7 +136,8 @@ int main(int argc, char** argv) {
               frames, fps, base_fps, infers, hits, s.infer_ms_ewma, s.infer_ms_max);
 
   cap.stop();
-  const bool pass = infers >= 1 && fps >= base_fps * 0.95;
+  // 判据：真实推理发生（耗时非零）且采集 fps 不掉（检测不拖累主管线）
+  const bool pass = infers >= 1 && s.infer_ms_ewma > 0.0 && fps >= base_fps * 0.95;
   std::printf("DETECT_TEST %s\n", pass ? "PASS" : "FAIL");
   return pass ? 0 : 1;
 }
