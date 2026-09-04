@@ -197,11 +197,15 @@ std::vector<Detection> RknnDetector::detect_nv12(const uint8_t* nv12, int src_w,
   if (!ctx_ || !nv12) return out;
   const auto t0 = std::chrono::steady_clock::now();
 
-  // RGA 两步：NV12 缩放到模型尺寸 → 转 RGB888
-  IM_STATUS s1 = imresize(const_cast<uint8_t*>(nv12), nv12_scaled_.data(), src_w, src_h,
-                          RK_FORMAT_YCbCr_420_SP, model_w_, model_h_);
-  IM_STATUS s2 = imcvtcolor(nv12_scaled_.data(), rgb_.data(), model_w_, model_h_,
-                            RK_FORMAT_YCbCr_420_SP, RK_FORMAT_RGB_888);
+  // RGA 两步（librga 2.x rga_buffer_t API）：NV12 缩放到模型尺寸 → 转 RGB888
+  rga_buffer_t rga_src = wrapbuffer_virtualaddr(
+      const_cast<uint8_t*>(nv12), src_w, src_h, RK_FORMAT_YCbCr_420_SP);
+  rga_buffer_t rga_mid = wrapbuffer_virtualaddr(
+      nv12_scaled_.data(), model_w_, model_h_, RK_FORMAT_YCbCr_420_SP);
+  rga_buffer_t rga_rgb =
+      wrapbuffer_virtualaddr(rgb_.data(), model_w_, model_h_, RK_FORMAT_RGB_888);
+  IM_STATUS s1 = imresize(rga_src, rga_mid);
+  IM_STATUS s2 = imcvtcolor(rga_mid, rga_rgb, RK_FORMAT_YCbCr_420_SP, RK_FORMAT_RGB_888);
   if (s1 != IM_STATUS_NOERROR || s2 != IM_STATUS_NOERROR) {
     VOX_ERROR("RGA 失败: resize=%d cvt=%d", static_cast<int>(s1), static_cast<int>(s2));
     return out;

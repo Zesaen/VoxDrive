@@ -71,10 +71,12 @@ target_link_libraries(vox_snapshot PUBLIC
   /usr/lib/aarch64-linux-gnu/libavutil.so.56)
 
 # ---- 事件锁录检测（R10）：NV12 → RGA 缩放/转RGB → RKNN INT8（NPU core0）----
-# librknnrt 运行库板载（/usr/lib/librknnrt.so）；rknn_api.h 本仓 vendored（prj2 同源）
+# librknnrt 运行库板载（/usr/lib/librknnrt.so）；rknn_api.h 本仓 vendored（prj2 同源）；
+# RGA 头文件在 /usr/include/rga（librga-dev 2.x，im2d rga_buffer_t API）
 add_library(vox_detect detect/rknn_detector.cpp)
 target_include_directories(vox_detect
-  PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/detect ${VOX_COMMON})
+  PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/detect ${VOX_COMMON}
+  PUBLIC /usr/include/rga)
 target_link_libraries(vox_detect PUBLIC rga rknnrt)
 
 # ---- 记录仪服务（C5/R5）：zmq-comm-kit 源码编译在 ~/Desktop/VoxDrive/zmq-comm-kit ----
