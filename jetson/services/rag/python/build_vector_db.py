@@ -28,6 +28,16 @@ import sys
 import numpy as np
 
 SENT_SPLIT = re.compile(r"(?<=[。！？；])")
+TOC_LINE = re.compile(r".{2,30}\.{2,}\s*\d{1,3}\s*$")
+
+
+def is_toc_chunk(chunk: str) -> bool:
+    """目录型块：多数行是 '标题.....页码' 形态（各章开头的迷你目录页）。"""
+    lines = [ln for ln in chunk.splitlines() if ln.strip()]
+    if len(lines) < 3:
+        return False
+    hits = sum(1 for ln in lines if TOC_LINE.search(ln.strip()))
+    return hits >= len(lines) * 0.6
 
 
 def chunk_paragraphs(paras, max_chars, overlap_paras=0):
@@ -150,15 +160,20 @@ def build_from_jsonl(path, max_chars, toc_pages):
             title_by_page[p] = title
 
     texts, meta = [], []
+    dropped_toc = 0
     for rec in pages:
-        if rec["page"] in toc_range:  # 目录页本身不入库
+        if rec["page"] in toc_range:  # 主目录页本身不入库
             continue
         for c in chunk_paragraphs(rec["text"].splitlines(), max_chars):
+            if is_toc_chunk(c):  # 章首迷你目录块：召回它们只会得到"标题+页码"
+                dropped_toc += 1
+                continue
             texts.append(c)
             meta.append({"section": title_by_page.get(rec["page"], f"第{rec['page']}页"),
                          "subsection": "",
                          "page": rec["page"]})
-    info = {"format": "jsonl", "pages": len(pages), "toc_entries": len(page_to_title)}
+    info = {"format": "jsonl", "pages": len(pages), "toc_entries": len(page_to_title),
+            "toc_chunks_dropped": dropped_toc}
     return texts, meta, info
 
 
