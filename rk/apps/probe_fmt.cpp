@@ -9,7 +9,9 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
+#include <cerrno>
 
 static int xioctl(int fd, unsigned long req, void* arg) {
   int r;
@@ -76,8 +78,9 @@ int main(int argc, char** argv) {
     v4l2_buffer q{}; q.type = fmt.type; q.memory = V4L2_MEMORY_MMAP; q.index = i;
     xioctl(fd, VIDIOC_QBUF, &q);
   }
-  printf("QUERYBUF len=%zu (期望 stride 布局 %u / 紧凑布局 %u)\n", lens[0],
-         (size_t)bpl * h * 3 / 2, (size_t)w * h * 3 / 2);
+  printf("QUERYBUF len=%zu (期望 stride 布局 %lu / 紧凑布局 %lu)\n", lens[0],
+         (unsigned long)((size_t)bpl * h * 3 / 2),
+         (unsigned long)((size_t)w * h * 3 / 2));
 
   int type = fmt.type;
   if (xioctl(fd, VIDIOC_STREAMON, &type) < 0) { perror("STREAMON"); return 1; }
