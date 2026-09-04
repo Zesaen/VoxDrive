@@ -12,9 +12,10 @@
 
 #include "vox_log.h"
 
-extern "C" {
+// im2d/rga 头自带 C++ 链接声明（含重载），不得包 extern "C"；rknn_api.h 是纯 C
 #include <im2d.h>
 #include <rga.h>
+extern "C" {
 #include "rknn_api.h"
 }
 
