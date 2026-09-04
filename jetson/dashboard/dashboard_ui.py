@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """数字座舱 Dashboard（PyQt5）。
 
-SUB :port.tool_bus_pub（车控状态）+ :port.intent_router_pub（服务状态）→ 界面刷新；
+SUB :port.tool_bus_pub（车控状态）+ :port.intent_router_pub（服务状态）
+   + tcp://rk.ip:rk.event_port（RK 行车记录异常事件，D2/R7 告警横幅）→ 界面刷新；
 REQ :port.tool_bus 执行按钮命令。端口读 voxdrive.conf。
 
 R8 扩展点：中部摄像头区（self.cam_view 文本占位）将替换为 RTMP 拉流渲染面板
@@ -94,12 +95,22 @@ DEFAULT_S  = {"ac_on": "false", "ac_temp": "24", "ac_mode": "vent", "ac_fan": "2
               "camera_view": "front", "camera_recording": "false"}
 FONT       = "Noto Sans CJK SC"
 
+# RK 行车记录异常事件 → 告警横幅（背景色, 边框色, 话术）；segment_* 等信息类事件不弹横幅
+ALERTS = {
+    "watermark_deleted":   ("rgba(255,145,0,0.16)",  WARN,   "存储超水位：已自动删除最旧录像段"),
+    "write_error":         ("rgba(255,23,68,0.16)",  DANGER, "录像写入异常，正在恢复"),
+    "capture_timeout":     ("rgba(255,23,68,0.16)",  DANGER, "摄像头采集超时，请检查行车记录仪"),
+    "rtmp_disconnected":   ("rgba(255,145,0,0.16)",  WARN,   "预览推流中断，自动重连中"),
+    "rtmp_connect_failed": ("rgba(255,145,0,0.16)",  WARN,   "预览推流连接失败，稍后自动重试"),
+}
+
 
 class ZmqSub(QThread):
-    """订阅 tool_bus 状态(6670) 与全局服务状态(6671)，转 Qt 信号。"""
+    """订阅 tool_bus 状态(6670)、全局服务状态(6671)、RK 行车记录事件(rk.event_port)，转 Qt 信号。"""
 
     sig_state = pyqtSignal(dict)
     sig_status = pyqtSignal(dict)
+    sig_rk_event = pyqtSignal(dict)
 
     def __init__(self):
         super().__init__()
@@ -107,22 +118,31 @@ class ZmqSub(QThread):
 
     def run(self):
         ctx = zmq.Context()
+        socks = {}
         s_state = ctx.socket(zmq.SUB)
         s_state.connect(vox_config.connect_endpoint("port.tool_bus_pub", "6670"))
         s_state.setsockopt(zmq.SUBSCRIBE, b"")
+        socks[s_state] = self.sig_state
         s_status = ctx.socket(zmq.SUB)
         s_status.connect(vox_config.connect_endpoint("port.intent_router_pub", "6671"))
         s_status.setsockopt(zmq.SUBSCRIBE, b"")
+        socks[s_status] = self.sig_status
+        s_rk = ctx.socket(zmq.SUB)
+        s_rk.connect("tcp://%s:%s" % (
+            vox_config.get("rk.ip", "192.168.137.200"),
+            vox_config.get("rk.event_port", "6701")))
+        s_rk.setsockopt(zmq.SUBSCRIBE, b"")
+        socks[s_rk] = self.sig_rk_event
         poller = zmq.Poller()
-        poller.register(s_state, zmq.POLLIN)
-        poller.register(s_status, zmq.POLLIN)
+        for s in socks:
+            poller.register(s, zmq.POLLIN)
         while self.ok:
             for sock, _ in dict(poller.poll(300)).items():
                 try:
                     msg = json.loads(sock.recv_string(zmq.NOBLOCK))
                 except (zmq.Again, json.JSONDecodeError, ValueError):
                     continue  # NOBLOCK 竞态/脏消息：跳过，下一轮继续
-                (self.sig_state if sock == s_state else self.sig_status).emit(msg)
+                socks[sock].emit(msg)
         ctx.destroy()
 
     def stop(self):
@@ -199,6 +219,16 @@ class Dashboard(QMainWindow):
         self.clk.setStyleSheet(f"color:{T1}; background:transparent; border:none;")
         sl.addWidget(self.clk)
         root.addWidget(sf)
+
+        # ── RK 异常事件告警横幅（默认隐藏，事件驱动显示，8s 后自动收回）──
+        self.alert = QLabel()
+        self.alert.setFont(QFont(FONT, 12, QFont.Bold))
+        self.alert.setStyleSheet("background:transparent; border:none; padding:6px 14px;")
+        self.alert.hide()
+        root.addWidget(self.alert)
+        self.alert_timer = QTimer()
+        self.alert_timer.setSingleShot(True)
+        self.alert_timer.timeout.connect(self.alert.hide)
 
         # ── 主区：摄像头 65% | 面板 35% ──
         mr = QHBoxLayout()
@@ -341,6 +371,7 @@ class Dashboard(QMainWindow):
         self.z = ZmqSub()
         self.z.sig_state.connect(self._ons)
         self.z.sig_status.connect(self._onx)
+        self.z.sig_rk_event.connect(self._on_rk_event)
         self.z.start()
         self._cmd_ctx = zmq.Context()
 
@@ -363,6 +394,31 @@ class Dashboard(QMainWindow):
                 self.slbl[sv].setText(f"· {sv}"),
                 self.slbl[sv].setStyleSheet(
                     "color:#445; background:transparent; border:none; font-size:10px;")))
+
+    def _on_rk_event(self, m):
+        """RK 行车记录事件（消息信封 type=event）：异常事件弹横幅，全量打 stdout 日志。
+
+        stdout 带 [rk-event] 前缀供无屏自测与 R9 毫秒日志对账。
+        """
+        p = m.get("payload", {}) if isinstance(m, dict) else {}
+        if not isinstance(p, dict):
+            return
+        ev = p.get("event", "")
+        if not ev:
+            return
+        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        print(f"[rk-event] {ts} {ev} "
+              f"{json.dumps(p.get('detail', {}), ensure_ascii=False)}", flush=True)
+        spec = ALERTS.get(ev)
+        if not spec:
+            return
+        bg, border, text = spec
+        self.alert.setText(f"⚠ {text}（{ts}）")
+        self.alert.setStyleSheet(
+            f"color:{T1}; background:{bg}; border:1px solid {border}; "
+            f"border-radius:8px; padding:6px 14px;")
+        self.alert.show()
+        self.alert_timer.start(8000)
 
     def _rf(self):
         s = self.state

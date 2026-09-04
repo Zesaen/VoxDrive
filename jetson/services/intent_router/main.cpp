@@ -57,6 +57,30 @@ struct Rule {
 };
 
 const Rule kRules[] = {
+    // 行车记录（D2/R7：跨板真设备 dashcam 工具；LLM 未给出 tool_call 时的规则兜底，
+    // 同前缀长词必须排在短词前（首条命中即返回））
+    {"停止录像", "dashcam", "record_off",  "", ""},
+    {"关闭录像", "dashcam", "record_off",  "", ""},
+    {"暂停录像", "dashcam", "record_off",  "", ""},
+    {"别录了",   "dashcam", "record_off",  "", ""},
+    {"开始录像", "dashcam", "record_on",   "", ""},
+    {"打开录像", "dashcam", "record_on",   "", ""},
+    {"开启录像", "dashcam", "record_on",   "", ""},
+    {"启动录像", "dashcam", "record_on",   "", ""},
+    {"恢复录像", "dashcam", "record_on",   "", ""},
+    {"拍张照",   "dashcam", "snapshot",    "", ""},
+    {"拍照",     "dashcam", "snapshot",    "", ""},
+    {"抓拍",     "dashcam", "snapshot",    "", ""},
+    {"打开预览", "dashcam", "preview_on",  "", ""},
+    {"开启预览", "dashcam", "preview_on",  "", ""},
+    {"关闭预览", "dashcam", "preview_off", "", ""},
+    {"停止预览", "dashcam", "preview_off", "", ""},
+    {"预览",     "dashcam", "preview_on",  "", ""},
+    {"录着",     "dashcam", "status",      "", ""},
+    {"在录像",   "dashcam", "status",      "", ""},
+    {"行车记录", "dashcam", "status",      "", ""},
+    {"存储",     "dashcam", "status",      "", ""},
+    {"录像",     "dashcam", "status",      "", ""},
     // 空调
     {"调高温度", "climate_control", "set_temp", "temp", ""},
     {"调低温度", "climate_control", "set_temp", "temp", ""},
@@ -84,13 +108,11 @@ const Rule kRules[] = {
     // 座椅
     {"座椅加热", "seat_heater",     "on",        "level", ""},
     {"座椅通风", "seat_heater",     "off",       "",      ""},
-    // 摄像头
+    // 摄像头（多视角演示工具；"录像/拍照"已上移 dashcam 块——真设备优先）
     {"摄像头",   "camera_capture",  "front",     "", ""},
     {"前视",     "camera_capture",  "front",     "", ""},
     {"后视",     "camera_capture",  "rear",      "", ""},
     {"倒车影像", "camera_capture",  "rear",      "", ""},
-    {"录像",     "camera_capture",  "record_on", "", ""},
-    {"拍照",     "camera_capture",  "record_on", "", ""},
     // 传感器
     {"传感器",    "sensor_read",    "read",      "", ""},
     {"胎压",      "sensor_read",    "read",      "", ""},

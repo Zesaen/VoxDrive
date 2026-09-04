@@ -44,10 +44,17 @@ TOOL_SPEC = """
 4. seat_heater: driver_on, driver_off, passenger_on, passenger_off, on, off
 5. camera_capture: front, rear, left, right, record_on, record_off
 6. sensor_read: read
+7. dashcam: 行车记录仪（跨板真实设备）。动作：status=查询录像/存储/预览状态，
+   record_on/record_off=开始/停止录像, preview_on/preview_off=打开/关闭预览推流,
+   snapshot=抓拍一张照片并保存。
+   用户问"还剩多少存储/存储空间/现在录着吗/录像状态/行车记录仪怎么样"用 status；
+   说"拍张照/拍照/抓拍"用 snapshot；要求开始或停止录像/预览用对应开关动作。
 """
 
 # R6 TODO：本表与 intent_router 规则表/TOOL_SPEC 三处重复，届时合一为单一工具注册表
 FALLBACK_TOOL_RULES = [
+    ("dashcam", "status", ["行车记录", "存储", "录着", "在录像"]),
+    ("dashcam", "snapshot", ["拍张照", "拍照", "抓拍"]),
     ("climate_control", "set_temp", ["空调", "温度", "几度"]),
     ("window_control", "open_all", ["车窗"]),
     ("sunroof_control", "open", ["天窗"]),
