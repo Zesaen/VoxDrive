@@ -76,7 +76,7 @@ IMX415 (RAW Bayer, 4-lane MIPI)
  "rtmp": {"...": "推流状态快照"}}
 ```
 
-支持命令：`status`（如上快照）、`set_recording`（录像开关，暂停期间编码照常、仅不落盘）。
+支持命令：`status`（如上快照，含 `preview` 与 `rtmp` 字段）、`set_recording`（录像开关，暂停期间编码照常、仅不落盘）、`set_preview`（预览推流开关，关=立即断流、开=下个 I 帧自动重连）、`snapshot`（应答信封 type=snapshot，携带 `jpeg_b64`）。
 
 **PUB/SUB（:6701，事件面）**——异常实时上行座舱告警：
 
@@ -203,7 +203,8 @@ jetson/scripts/run_regression.sh             # 回归测试
 | RK ZMQ 服务（REQ 状态查询 / PUB 事件上行） | 状态查询含 recording/pipeline_fps/存储水位（used 52% 实测）；录像开关 off/on 应答正确；慢加入者 SUB 收到 `segment_closed` 事件信封；16s 试跑 4 段全部 ffprobe 有效 | `test_recorder_client` REQ+SUB 双通道自测，2026-09-03 | 已实测 |
 | RTMP 推流（RK 回环验证） | 推流 408 帧与录像完全一致（双 sink 扇出无丢帧）；拉流 h264 1080p、ffmpeg 解码零错误；实测码率 0.52Mbps（静态场景 VBR 下探，目标 4Mbps）；服务端中途断开→写失败即时检测→I 帧+2s 冷却重连，录像管线不受影响 | `test_rtmp` 两相位 + `recorder_service --rtmp-url` 集成，ffmpeg `-listen 1` 作回环接收端，2026-09-03 | 已实测（跨板拉流待 mediamtx 部署） |
 | 语音端到端延迟（ASR→TTS 播报结束） | 待实测 | 毫秒日志打点对账 | 未开始 |
-| 跨板查询往返延迟 | 待实测 | 毫秒日志打点对账 | 未开始 |
+| 跨板查询往返延迟 | REQ rtt=2ms（Jetson tool_bus → RK recorder_service，ZMQ 消息信封，路由器当交换机同段） | `dashcam` 工具联测计时，2026-09-04 | 已实测 |
+| 跨板抓拍（JPEG over ZMQ） | 1080p JPEG ~195KB（NV12→mjpeg 软编 + base64 REQ/REP）跨板落盘 Jetson，`file` 验证有效图像；录像/预览开关状态回读一致 | `dashcam` 全动作联测，2026-09-04 | 已实测 |
 
 ## Roadmap
 
@@ -215,7 +216,8 @@ jetson/scripts/run_regression.sh             # 回归测试
 - [x] RK3588 MP4 分段循环录像（libavformat 封装，I 帧边界滚动分段/水位最旧覆盖/断链恢复，逐段解码校验）
 - [x] RK ZMQ 服务（`recorder_service`：V4L2→MPP→MP4 管线线程 + REP 状态/录像开关 + PUB 事件上行，统一消息信封；`test_recorder_client` 双通道自测 PASS）
 - [x] RK3588 RTMP 推流（`RtmpSink` flv over rtmp：avcC/AVCC 转换与 MP4 共用、I 帧+冷却断链重连；ffmpeg `-listen 1` 回环两相位自测 PASS + 服务级双扇出集成验证；跨板 mediamtx 部署待网络）
-- [ ] 跨板工具 + dashboard 预览/状态面板
+- [x] 跨板工具（`dashcam`：状态查询 rtt 2ms / 录像与预览开关 / 抓拍 JPEG 跨板落盘；RK 端配套 `set_preview`/`snapshot` 命令）
+- [ ] dashboard 预览/状态面板 + 语音闭环 + 端到端延迟分解实测
 - [ ] 跨板闭环联调 + 端到端延迟分解实测
 - [ ] 语义双路意图路由、RKNN 事件锁录（规划中）
 
