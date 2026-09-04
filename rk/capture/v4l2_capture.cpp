@@ -139,10 +139,17 @@ bool V4L2Capture::negotiate_format() {
     fmt.fmt.pix_mp.width = params_.width;
     fmt.fmt.pix_mp.height = params_.height;
     fmt.fmt.pix_mp.pixelformat = to_v4l2_fourcc(params_.format);
+    // bytesperline/sizeimage 清零再 S_FMT：G_FMT 带出的旧值若原样传回，
+    // 本板驱动会照单全收（boot 后 sensor 原生 4K 状态下 bpl 残留 3840，
+    // 导致 1080p 请求得到 3840 行距 + 布局与缓冲不符）。清零强制按请求尺寸重算。
+    fmt.fmt.pix_mp.plane_fmt[0].bytesperline = 0;
+    fmt.fmt.pix_mp.plane_fmt[0].sizeimage = 0;
   } else {
     fmt.fmt.pix.width = params_.width;
     fmt.fmt.pix.height = params_.height;
     fmt.fmt.pix.pixelformat = to_v4l2_fourcc(params_.format);
+    fmt.fmt.pix.bytesperline = 0;
+    fmt.fmt.pix.sizeimage = 0;
   }
   if (xioctl(fd_, VIDIOC_S_FMT, &fmt) < 0) {
     VOX_ERROR("S_FMT %ux%u %s: %s", params_.width, params_.height,
@@ -231,6 +238,33 @@ bool V4L2Capture::request_and_map_buffers() {
     }
     buffers_[i].start = addr;
     buffers_[i].length = length;
+
+    // 首个缓冲上做一次布局校验（防御层）：单平面 NV12 的 UV 平面起点按
+    // bpl*height 推导，行距按剩余空间均摊。bpl*height*1.5 超出缓冲长度时
+    // 采"Y 行距=bpl、UV 行距=(len-bpl*h)/(h/2)"的混合布局；UV 行距若仍
+    // 小于 width 则几何无解，拒绝启动（宁可报错不可读越界——实测 boot 后
+    // sensor 4K 残留态曾出现 bpl=3840/len 只容混合布局的情况）。
+    if (i == 0) {
+      const size_t y_end = cached_stride_ * params_.height;
+      if (y_end + cached_stride_ * params_.height / 2 <= length) {
+        uv_stride_ = cached_stride_;  // 常规：全缓冲统一行距
+      } else {
+        uv_stride_ = params_.height >= 2 && y_end < length
+                         ? (length - y_end) / (params_.height / 2)
+                         : 0;
+      }
+      if (uv_stride_ < params_.width) {
+        VOX_ERROR("NV12 缓冲几何无解: bpl=%zu len=%zu 需 Y 行距≥%u 且 UV 行距≥%u"
+                  "（尝试先 v4l2-ctl -v width=%u,height=%u 重置设备格式）",
+                  cached_stride_, length, params_.width, params_.width,
+                  params_.width, params_.height);
+        return false;
+      }
+      if (uv_stride_ != cached_stride_) {
+        VOX_WARN("NV12 混合行距: Y=%zu UV=%zu（驱动 sizeimage 与 bpl 不一致）",
+                 cached_stride_, uv_stride_);
+      }
+    }
 
     // 导出 DMA-BUF fd：单平面布局下即整帧缓冲，供 MPP/RGA 零拷贝
     v4l2_exportbuffer exp{};
@@ -348,7 +382,7 @@ bool V4L2Capture::dequeue_oldest() {
   dequeued_index_ = static_cast<int>(buf.index);
   MappedBuffer& mb = buffers_[buf.index];
 
-  // 单平面 NV12：Y 在缓冲头部，UV 紧随其后（Y/UV 物理连续）
+  // 单平面 NV12：Y 在缓冲头部，UV 紧随 Y 平面之后（行距可能不同，见 request_and_map_buffers）
   const size_t stride = cached_stride_;
   current_frame_ = VideoFrame{};
   current_frame_.width = params_.width;
@@ -362,9 +396,9 @@ bool V4L2Capture::dequeue_oldest() {
   current_frame_.plane[0] = mb.start;
   current_frame_.plane_stride[0] = stride;
   current_frame_.plane_bytes[0] = stride * params_.height;
-  current_frame_.plane[1] = static_cast<uint8_t*>(mb.start) + current_frame_.plane_bytes[0];
-  current_frame_.plane_stride[1] = stride;
-  current_frame_.plane_bytes[1] = stride * params_.height / 2;
+  current_frame_.plane[1] = static_cast<uint8_t*>(mb.start) + stride * params_.height;
+  current_frame_.plane_stride[1] = uv_stride_;
+  current_frame_.plane_bytes[1] = uv_stride_ * (params_.height / 2);
   return true;
 }
 

@@ -156,25 +156,28 @@ bool MppEncoder::fetch_sps_pps() {
 
 void MppEncoder::copy_nv12_in(const VideoFrame& in, uint8_t* dst) {
   const uint32_t w = params_.width;
-  const uint32_t src_stride = static_cast<uint32_t>(in.plane_stride[0]);
-  const auto copy_plane = [&](const uint8_t* src, uint32_t rows, uint32_t row_bytes) {
+  // 逐平面行距：Y/UV 行距可能不同（rkisp 单平面 NV12 混合布局，见 v4l2_capture）
+  const auto copy_plane = [&](const uint8_t* src, size_t src_stride, uint32_t rows,
+                              uint32_t row_bytes) {
     if (src_stride == hor_stride_ && row_bytes == hor_stride_) {
       // 快路径：源与目标 stride 一致，整块拷贝
       memcpy(dst, src, static_cast<size_t>(hor_stride_) * rows);
     } else {
       for (uint32_t r = 0; r < rows; ++r) {
-        memcpy(dst + static_cast<size_t>(r) * hor_stride_, src + static_cast<size_t>(r) * src_stride,
-               row_bytes);
+        memcpy(dst + static_cast<size_t>(r) * hor_stride_,
+               src + static_cast<size_t>(r) * src_stride, row_bytes);
       }
     }
   };
   // Y 平面（ver_stride 对齐产生的 padding 行清零，避免读到未初始化内存）
-  copy_plane(static_cast<const uint8_t*>(in.plane[0]), params_.height, w);
+  copy_plane(static_cast<const uint8_t*>(in.plane[0]), in.plane_stride[0],
+             params_.height, w);
   memset(dst + static_cast<size_t>(hor_stride_) * params_.height, 0,
          static_cast<size_t>(hor_stride_) * (ver_stride_ - params_.height));
   // UV 平面位于 hor*ver 偏移处（半平面交错，行数为高一半）
   uint8_t* dst_uv = dst + static_cast<size_t>(hor_stride_) * ver_stride_;
-  copy_plane(static_cast<const uint8_t*>(in.plane[1]), params_.height / 2, w);
+  copy_plane(static_cast<const uint8_t*>(in.plane[1]), in.plane_stride[1],
+             params_.height / 2, w);
   memset(dst_uv + static_cast<size_t>(hor_stride_) * (params_.height / 2), 0,
          static_cast<size_t>(hor_stride_) * (ver_stride_ / 2 - params_.height / 2));
 }
