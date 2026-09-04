@@ -5,8 +5,9 @@
 //             事件（分段/水位/写失败/断流）经 ZmqPub 上行（消息信封 type=event）
 //   控制线程：ZmqServer REP 应答状态查询/录像开关（信封 type=status）
 // 协议（跨板，见 jetson/common/msg_envelope.h）：
-//   REQ 体=信封{type:"status", payload:{"cmd":"status"|"set_recording","value":bool}}
-//   REP 体=信封{type:"status", payload:{recording, pipeline_fps, storage{...}, ...}}
+//   REQ 体=信封{type:"status", payload:{"cmd":"status"|"set_recording"|"set_preview"|"snapshot", ...}}
+//   REP 体=信封{type:"status"|...， payload:{recording, pipeline_fps, storage{...}, ...}}
+//   snapshot 应答信封 type="snapshot"，payload 携带 jpeg_b64（D1/R6 抓拍）
 // 用法：recorder_service [--seconds N] [--segment-seconds s] [--dir D]（缺省走 voxdrive.conf）
 #define VOX_LOG_TAG "rk.recorder"
 
@@ -15,6 +16,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -24,11 +26,13 @@
 
 #include "ZmqPub.h"
 #include "ZmqServer.h"
+#include "jpeg_encoder.h"
 #include "json.hpp"
 #include "mpp_encoder.h"
 #include "mp4_segment_sink.h"
 #include "rtmp_sink.h"
 #include "v4l2_capture.h"
+#include "base64.h"
 #include "msg_envelope.h"
 #include "vox_config.h"
 #include "vox_log.h"
@@ -45,6 +49,15 @@ struct SharedState {
   uint64_t frames_encoded = 0;
   uint64_t frames_dropped = 0;    // 暂停期间丢弃的编码帧
   int64_t start_ns = 0;
+};
+
+// 抓拍请求：控制线程发起 → 管线线程在下一帧编码 JPEG → 控制线程取走应答
+struct SnapshotRequest {
+  std::mutex mu;
+  std::condition_variable cv;
+  bool pending = false;           // 置位表示请求在途（管线线程独占清零）
+  bool done = false;
+  std::vector<uint8_t> jpeg;
 };
 
 int64_t steady_ns() {
@@ -130,6 +143,7 @@ int main(int argc, char** argv) {
 
   SharedState st;
   st.start_ns = steady_ns();
+  SnapshotRequest snap;
 
   // ---- 事件上行 PUB（仅管线线程使用）----
   zmq_component::ZmqPub event_pub(event_endpoint);
@@ -209,6 +223,22 @@ int main(int argc, char** argv) {
         continue;
       }
       capture_timeouts = 0;
+
+      // 抓拍：在编码前对原始 NV12 帧出 JPEG（录像暂停期间同样可用）
+      {
+        std::lock_guard<std::mutex> lk(snap.mu);
+        if (snap.pending) {
+          snap.jpeg = encode_jpeg_nv12(
+              static_cast<const uint8_t*>(f->plane[0]),
+              static_cast<const uint8_t*>(f->plane[1]), f->width, f->height,
+              static_cast<int>(f->plane_stride[0]),
+              static_cast<int>(f->plane_stride[1]));
+          snap.pending = false;
+          snap.done = true;
+          snap.cv.notify_one();
+        }
+      }
+
       if (last_ns > 0) {
         const double inst = 1e9 / static_cast<double>(f->timestamp_ns - last_ns);
         {
@@ -231,7 +261,7 @@ int main(int argc, char** argv) {
           std::lock_guard<std::mutex> lk(st.mu);
           st.frames_dropped++;
         }
-        if (rtmp) rtmp->on_packet(*pkt);  // 预览流不受录像开关影响
+        if (rtmp) rtmp->on_packet(*pkt);  // 预览开关在 RtmpSink 内部处理（关=断流，开=I 帧自动重连）
         std::lock_guard<std::mutex> lk(st.mu);
         st.frames_encoded++;
       }
@@ -282,7 +312,12 @@ int main(int argc, char** argv) {
           {"frames_dropped", st.frames_dropped},
           {"uptime_s", (steady_ns() - st.start_ns) / 1e9},
           {"storage", storage_snapshot(storage_dir, sink)}};
-      if (rtmp) reply_payload["rtmp"] = rtmp_snapshot(*rtmp);
+      if (rtmp) {
+        reply_payload["rtmp"] = rtmp_snapshot(*rtmp);
+        reply_payload["preview"] = rtmp->enabled();
+      } else {
+        reply_payload["preview"] = false;
+      }
     } else if (cmd == "set_recording") {
       const bool want = payload.value("value", true);
       {
@@ -291,10 +326,36 @@ int main(int argc, char** argv) {
       }
       VOX_INFO("录像开关 → %s", want ? "on" : "off");
       reply_payload = {{"recording", want}};
+    } else if (cmd == "set_preview") {
+      const bool want = payload.value("value", true);
+      if (rtmp) rtmp->set_enabled(want);
+      VOX_INFO("预览开关 → %s（rtmp=%s）", want ? "on" : "off", rtmp ? "yes" : "no");
+      reply_payload = {{"preview", rtmp ? rtmp->enabled() : false}};
+    } else if (cmd == "snapshot") {
+      // 置请求 → 管线线程下一帧出 JPEG（3s 内）
+      std::unique_lock<std::mutex> lk(snap.mu);
+      snap.jpeg.clear();
+      snap.done = false;
+      snap.pending = true;
+      const bool got = snap.cv.wait_for(lk, std::chrono::seconds(3),
+                                        [&] { return snap.done; });
+      if (got && !snap.jpeg.empty() && snap.jpeg.size() > 2 &&
+          snap.jpeg[0] == 0xff && snap.jpeg[1] == 0xd8) {
+        reply_payload = {{"width", cp.width},
+                         {"height", cp.height},
+                         {"bytes", snap.jpeg.size()},
+                         {"jpeg_b64", vox::b64_encode(snap.jpeg.data(), snap.jpeg.size())}};
+        VOX_INFO("抓拍完成: %zu 字节 JPEG", snap.jpeg.size());
+      } else {
+        reply_payload = {{"error", got ? "jpeg encode failed" : "pipeline timeout"}};
+      }
+      // snapshot 应答走独立消息类型（信封注册表 kTypeSnapshot）
     } else {
       reply_payload = {{"error", "unknown cmd"}};
     }
-    server.send(vox::msg::make(vox::msg::kTypeStatus, "rk.recorder", reply_payload).dump());
+    server.send(vox::msg::make(cmd == "snapshot" ? vox::msg::kTypeSnapshot
+                                                 : vox::msg::kTypeStatus,
+                               "rk.recorder", reply_payload).dump());
   }
 
   pipeline.join();

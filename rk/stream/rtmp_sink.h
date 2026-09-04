@@ -60,6 +60,11 @@ class RtmpSink final : public IVideoSink {
   using EventHandler = std::function<void(const char* event, const std::string& detail)>;
   void set_event_handler(EventHandler h) { handler_ = std::move(h); }
 
+  // 预览开关（R6）：关闭=立即断开推流；重新打开=下个 I 帧自动重连（复用断链恢复状态机，
+  // 保证接入端从 IDR 起可解码）。录像不受影响。
+  void set_enabled(bool on);
+  bool enabled() const { return enabled_; }
+
   Stats stats_snapshot() const;  // 跨线程快照
 
  private:
@@ -74,6 +79,7 @@ class RtmpSink final : public IVideoSink {
   std::vector<uint8_t> scratch_;     // AVCC sample 转换复用缓冲
   int64_t frame_index_ = 0;          // 已发送帧计数（PTS 基准，1/fps）
   bool await_keyframe_ = true;       // 未连接：等 I 帧再（重）连
+  bool enabled_ = true;              // 预览开关（false 时 on_packet 直接丢弃）
   bool active_ = false;              // start 成功且未 stop
   int64_t last_connect_try_ms_ = 0;  // 重连冷却计时
   Stats stats_;

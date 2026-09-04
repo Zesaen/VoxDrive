@@ -15,6 +15,7 @@
 #include <thread>
 
 #include "ZmqClient.h"
+#include "base64.h"
 #include "json.hpp"
 #include "msg_envelope.h"
 #include "vox_config.h"
@@ -83,6 +84,28 @@ int main() {
       ok = false;
     } else {
       VOX_INFO("录像开关 off/on 生效");
+    }
+
+    // ---- 预览开关（D1）：off → on ----
+    const nlohmann::json pv_off = query(client, make_req("set_preview", {{"value", false}}));
+    const nlohmann::json pv_on = query(client, make_req("set_preview", {{"value", true}}));
+    if (!(pv_off["payload"].value("preview", true) == false &&
+          pv_on["payload"].value("preview", false) == true)) {
+      VOX_ERROR("预览开关应答异常");
+      ok = false;
+    } else {
+      VOX_INFO("预览开关 off/on 应答正确");
+    }
+
+    // ---- 抓拍（D1）：应答含 JPEG base64 且魔数正确 ----
+    const nlohmann::json sn = query(client, make_req("snapshot"));
+    const std::string b64 = sn["payload"].value("jpeg_b64", "");
+    std::vector<uint8_t> jpeg = vox::b64_decode(b64);
+    if (jpeg.size() < 10000 || jpeg[0] != 0xff || jpeg[1] != 0xd8) {
+      VOX_ERROR("抓拍应答异常: %zu 字节", jpeg.size());
+      ok = false;
+    } else {
+      VOX_INFO("抓拍: %zu 字节 JPEG 魔数正确", jpeg.size());
     }
   }
 

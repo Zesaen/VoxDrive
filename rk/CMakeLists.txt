@@ -60,6 +60,16 @@ target_link_libraries(vox_stream PUBLIC vox_h264
   /usr/lib/aarch64-linux-gnu/libavcodec.so.58
   /usr/lib/aarch64-linux-gnu/libavutil.so.56)
 
+# ---- 抓拍（D1/R6）：NV12 → JPEG（mjpeg + swscale）----
+add_library(vox_snapshot snapshot/jpeg_encoder.cpp)
+target_include_directories(vox_snapshot
+  PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/snapshot ${VOX_COMMON}
+  PRIVATE ${FFMPEG_INC})
+target_link_libraries(vox_snapshot PUBLIC
+  /usr/lib/aarch64-linux-gnu/libavcodec.so.58
+  /usr/lib/aarch64-linux-gnu/libswscale.so.5
+  /usr/lib/aarch64-linux-gnu/libavutil.so.56)
+
 # ---- 记录仪服务（C5/R5）：zmq-comm-kit 源码编译在 ~/Desktop/VoxDrive/zmq-comm-kit ----
 #（PC 侧执行 rk/scripts/setup_zmq_kit.sh 拷贝源码并板上编译；复制不软链）
 set(ZMQ_KIT "$ENV{HOME}/Desktop/VoxDrive/zmq-comm-kit")
@@ -84,7 +94,7 @@ target_link_libraries(test_rtmp vox_capture vox_encode vox_stream)
 add_executable(recorder_service service/recorder_service.cpp)
 target_include_directories(recorder_service PRIVATE ${ZMQ_KIT}/include)
 target_link_libraries(recorder_service vox_capture vox_encode vox_storage vox_stream
-  ${ZMQ_KIT}/build/libzmq_component.so)
+  vox_snapshot ${ZMQ_KIT}/build/libzmq_component.so)
 set_target_properties(recorder_service PROPERTIES
   BUILD_RPATH "${ZMQ_KIT}/build" INSTALL_RPATH "${ZMQ_KIT}/build")
 

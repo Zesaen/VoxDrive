@@ -5,9 +5,8 @@
 //   应答  {"ok":true,"result":"...","state":{本次变更键值}}   （无变更省略 state）
 //   广播  {"type":"state_full"|"state_change","tool":..,"action":..,"values":{..}}
 //
-// 工具注册表：当前全部为本地工具（直接执行）。
-// R6 扩展点：跨板工具（录像/存储查询、抓拍、预览开关）将转发 RK 节点
-// （rk.status_port，统一消息信封），届时在此注册并标记 cross-board。
+// 工具注册表：本地工具（直接执行）+ 跨板工具 dashcam（ZMQ 转发 RK
+// recorder_service，统一消息信封；状态查询/录像与预览开关/抓拍）。
 #define VOX_LOG_TAG "tool_bus"
 #include "../../common/vox_log.h"
 #include "../../common/vox_config.h"
@@ -19,6 +18,7 @@
 #include "ZmqServer.h"
 #include "tools/CameraCapture.h"
 #include "tools/ClimateControl.h"
+#include "tools/DashcamControl.h"
 #include "tools/SeatHeater.h"
 #include "tools/SensorRead.h"
 #include "tools/SunroofControl.h"
@@ -67,6 +67,7 @@ int main() {
     tools["seat_heater"]     = std::make_unique<SeatHeater>(state);
     tools["camera_capture"]  = std::make_unique<CameraCapture>(state);
     tools["sensor_read"]     = std::make_unique<SensorRead>(state);
+    tools["dashcam"]         = std::make_unique<DashcamControl>(state);  // 跨板：RK recorder_service
 
     pub.publish(nlohmann::json{{"type", "state_full"}, {"values", state.to_json()}}.dump());
     VOX_INFO("listening %s, pub %s（本地工具 %zu 个）", rep_ep.c_str(), pub_ep.c_str(),

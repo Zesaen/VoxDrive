@@ -131,8 +131,20 @@ void RtmpSink::close_output() {
   }
 }
 
+void RtmpSink::set_enabled(bool on) {
+  if (!active_ || on == enabled_) return;
+  enabled_ = on;
+  if (!on) {
+    close_output();
+    VOX_INFO("预览推流已关闭（录像不受影响）");
+  } else {
+    last_connect_try_ms_ = wall_ms() - params_.reconnect_interval_ms;  // 立即允许重连
+    VOX_INFO("预览推流已开启（下个 I 帧自动重连）");
+  }
+}
+
 void RtmpSink::on_packet(const EncodedPacket& pkt) {
-  if (!active_) return;
+  if (!active_ || !enabled_) return;
 
   // 未连接：只在 I 帧 + 冷却期满时尝试重连（其余帧丢弃，接入流从 IDR 起可解码）
   if (!fmt_) {
