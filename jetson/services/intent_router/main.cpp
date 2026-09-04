@@ -79,6 +79,7 @@ const Rule kRules[] = {
     {"录着",     "dashcam", "status",      "", ""},
     {"在录像",   "dashcam", "status",      "", ""},
     {"行车记录", "dashcam", "status",      "", ""},
+    {"记录仪",   "dashcam", "status",      "", ""},
     {"存储",     "dashcam", "status",      "", ""},
     {"录像",     "dashcam", "status",      "", ""},
     // 空调
@@ -131,27 +132,39 @@ std::string number_before(const std::string& query, const std::string& unit) {
     return s < p ? query.substr(s, p - s) : "";
 }
 
+// 规则行 → 工具请求 JSON（dashcam 直通与 LLM 兜底共用）
+std::string build_req_from_rule(const Rule& r, const std::string& query) {
+    nlohmann::json req{{"tool", r.tool}, {"action", r.action}};
+    if (r.param && *r.param) {
+        if (r.value && *r.value) {
+            req[r.param] = r.value;
+        } else {
+            // temp 按"度"、level 按"档"提取数字，其余无数字可提则省略
+            std::string unit = std::strcmp(r.param, "temp") == 0 ? "度"
+                               : std::strcmp(r.param, "level") == 0 ? "档" : "";
+            if (!unit.empty()) {
+                std::string v = number_before(query, unit);
+                if (!v.empty()) req[r.param] = v;
+            }
+        }
+    }
+    return req.dump();
+}
+
 // 规则兜底：LLM 未给出 tool_call 细节时按关键词直接构造工具请求
 std::string build_tool_request(const std::string& query) {
     for (const Rule& r : kRules) {
         if (query.find(r.kw) == std::string::npos) continue;
-        nlohmann::json req{{"tool", r.tool}, {"action", r.action}};
-        if (r.param && *r.param) {
-            if (r.value && *r.value) {
-                req[r.param] = r.value;
-            } else {
-                // temp 按"度"、level 按"档"提取数字，其余无数字可提则省略
-                std::string unit = std::strcmp(r.param, "temp") == 0 ? "度"
-                                   : std::strcmp(r.param, "level") == 0 ? "档" : "";
-                if (!unit.empty()) {
-                    std::string v = number_before(query, unit);
-                    if (!v.empty()) req[r.param] = v;
-                }
-            }
-        }
-        return req.dump();
+        return build_req_from_rule(r, query);
     }
     return "{\"tool\":\"sensor_read\",\"action\":\"read\"}";  // 兜底读传感器（保持 prj1 行为）
+}
+
+// 首个命中的规则（kRules 按域分块，dashcam 块在表头；返回 nullptr = 无命中）
+const Rule* match_first_rule(const std::string& query) {
+    for (const Rule& r : kRules)
+        if (query.find(r.kw) != std::string::npos) return &r;
+    return nullptr;
 }
 
 // ---------- 下游请求构造 ----------
@@ -283,6 +296,34 @@ int main() {
         const std::string text = server.receive();
         VOX_INFO("[asr ->] %s", text.c_str());
         const std::string session_id = "default";
+
+        // ── dashcam 域确定性直通（D2/R7）：命中即执行工具，LLM 只组织播报 ──
+        // 真设备控制不交给 LLM 猜：Qwen2.5-1.5B 在 7 个工具间选择不可靠（实测
+        // "关闭预览"被选成 window_control.close_all、"还剩多少存储"被选成
+        // sensor_read 拿 mock 数据编数）。直通后单次 LLM 调用（allow_tool=false）
+        // 基于真实工具结果生成答复，延迟也省一轮 LLM。
+        if (const Rule* r = match_first_rule(text);
+            r != nullptr && std::strcmp(r->tool, "dashcam") == 0) {
+            status_pub.publish(nlohmann::json{{"service", "router"},
+                                              {"status", "DASHCAM -> Tool -> LLM -> TTS"}}
+                                   .dump());
+            const std::string tool_req = build_req_from_rule(*r, text);
+            VOX_INFO("[dashcam-direct] kw=%s %s", r->kw, tool_req.c_str());
+            std::string tool_resp = tool_client.request(tool_req);
+            VOX_INFO("[tool ->] %.160s", tool_resp.c_str());
+            std::string tool_result = jstr(jparse(tool_resp), "result");
+            if (tool_result.empty()) tool_result = tool_resp;
+
+            std::string llm_resp = llm_client.request(
+                build_llm_agent_request(text, "", false, tool_result, tool_req, session_id)
+                    .dump());
+            VOX_INFO("[llm(final)] %.160s", llm_resp.c_str());
+            std::string tts_text = jstr(jparse(llm_resp), "text");
+            server.send(llm_resp);
+            send_tts_async(tts_text);
+            if (!tts_text.empty()) VOX_INFO("[tts] text sent (%zu chars)", tts_text.size());
+            continue;
+        }
 
         auto cls = classifier.classify_query(text);
         auto cfg = classifier.build_route_config(cls);
