@@ -5,7 +5,16 @@
 ## 启动
 
 ```bash
-~/Desktop/VoxDrive/jetson/scripts/start_all.sh
+~/Desktop/VoxDrive/jetson/scripts/start_all.sh --ui    # 含 dashboard 界面（Jetson 屏幕，自动开预览）
+~/Desktop/VoxDrive/jetson/scripts/start_all.sh         # 纯后台服务（无界面）
+```
+
+`--ui` 在板端桌面终端或 SSH 里都能用（SSH 时自动 `DISPLAY=:0` 显示到 Jetson 屏幕）。
+
+服务已在跑、只想补开界面：
+
+```bash
+DISPLAY=:0 VOX_DASH_AUTOPREVIEW=1 nohup python3 ~/Desktop/VoxDrive/jetson/dashboard/dashboard_ui.py >/tmp/dashboard.log 2>&1 &
 ```
 
 ## 键盘语音测试

@@ -7,9 +7,10 @@
 #   ③ 预览推流：默认打开 RK 推流（mediamtx 即有流，dashboard/HLS 立刻有画面）
 #
 # 用法：
-#   ./start_all.sh                 # 默认开预览
+#   ./start_all.sh                 # 默认开预览（无界面，纯后台服务）
+#   ./start_all.sh --ui            # 同时启动 dashboard GUI（显示在 Jetson 屏幕并自动拉预览流）
 #   ./start_all.sh --no-preview    # 不推流（仅录像+语音链路）
-#   VOX_START_DASHBOARD=1 ./start_all.sh   # Jetson 有桌面会话时同时启动 dashboard GUI
+#   VOX_START_DASHBOARD=1 ./start_all.sh   # 等价于 --ui（兼容旧写法）
 #
 # 依赖（一次性）：Jetson→cat@rk.ip 的 SSH 免密（公钥装入 RK authorized_keys，
 # 配置方法见 newPrj/AGENTS.md 组网节）。脚本内不存任何口令。
@@ -21,7 +22,15 @@ RK_IP=$(awk -F= '$1 ~ /^rk\.ip[[:space:]]*$/ {sub(/#.*/,"",$2); gsub(/^[[:space:
 RK_USER=$(awk -F= '$1 ~ /^rk\.ssh_user[[:space:]]*$/ {sub(/#.*/,"",$2); gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2); print $2; exit}' "$CONF")
 RK_USER="${RK_USER:-cat}"
 PREVIEW=1
-[ "${1:-}" = "--no-preview" ] && PREVIEW=0
+DASH_UI=0
+for arg in "$@"; do
+    case "$arg" in
+        --no-preview) PREVIEW=0 ;;
+        --ui) DASH_UI=1 ;;
+        *) printf '[WARN] 未知参数: %s（可用：--ui / --no-preview）\n' "$arg" ;;
+    esac
+done
+[ "${VOX_START_DASHBOARD:-0}" = "1" ] && DASH_UI=1
 
 rk_status() {  # 0=在跑 1=无应答；直发消息信封 status 命令
     /usr/bin/python3 - "$RK_IP" <<'PY' >/dev/null 2>&1
@@ -70,6 +79,15 @@ else
 fi
 
 # ── ② Jetson 全栈（含 mediamtx）──
+if [ "$DASH_UI" = "1" ]; then
+    export VOX_START_DASHBOARD=1
+    export VOX_DASH_AUTOPREVIEW=1   # dashboard 启动即自动拉预览流
+    export DISPLAY="${DISPLAY:-:0}"  # SSH 会话无 DISPLAY 时指向本机桌面
+    # gdm 会话的 Xauthority 不在默认位置时补上
+    if [ -z "${XAUTHORITY:-}" ] && [ -f "/run/user/$(id -u)/gdm/Xauthority" ]; then
+        export XAUTHORITY="/run/user/$(id -u)/gdm/Xauthority"
+    fi
+fi
 "$SCRIPT_DIR/start_core.sh" || exit 1
 
 # ── ③ 预览推流 ──
@@ -82,6 +100,9 @@ if [ "$PREVIEW" = "1" ]; then
 fi
 
 printf '\n====== 就绪 ======\n'
+if [ "$DASH_UI" = "1" ]; then
+    printf '界面：dashboard 应显示在 Jetson 屏幕（异常看 /tmp/dashboard.log；无桌面会话时起不来）\n'
+fi
 printf '键盘语音测试：python3 %s/services/asr/stdin_asr.py\n' "$SCRIPT_DIR/.."
 printf '浏览器看画面：http://%s:8888/live/dashcam\n' "$(hostname -I | awk '{print $1}')"
 printf '试试输入：现在录着吗 / 行车记录仪还剩多少存储 / 帮我拍张照 / 停止录像 / 开始录像 / 关闭预览\n'
