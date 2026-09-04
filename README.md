@@ -183,11 +183,36 @@ rk/scripts/build_on_rk.sh            # 板上编译
 
 ```bash
 jetson/scripts/build_on_board.sh <service>   # 板上编译单个/全部服务
-jetson/scripts/start_core.sh                 # 一键全栈（依赖排序 + 端口健康检查）
+jetson/scripts/start_core.sh                 # Jetson 侧一键全栈（依赖排序 + 端口健康检查）
 jetson/scripts/run_regression.sh             # 回归测试
 ```
 
 模型文件不入库，按清单部署（LLM/ASR/TTS/embedding 四类约 1.7GB）；mediamtx 等第三方二进制另行部署。
+
+### 快速启动（双板一键，Jetson 上执行）
+
+前置（一次性）：Jetson→RK SSH 免密（Jetson 公钥装入 RK `authorized_keys`）。
+
+```bash
+~/Desktop/VoxDrive/jetson/scripts/start_all.sh    # 双板一键：探测/SSH 拉起 RK 录像服务 → Jetson 全栈（含 mediamtx）→ 开预览推流；冷启动实测 23.5s
+~/Desktop/VoxDrive/jetson/scripts/stop_all.sh     # 双板一键停止
+# 可选：--no-preview 只录像不推流；VOX_START_DASHBOARD=1 同时启动 Qt 座舱 GUI（需桌面会话）
+```
+
+启动后即可用键盘注入语音查询（走完整 router→跨板工具→LLM→TTS 链，扬声器播报）：
+
+```bash
+python3 ~/Desktop/VoxDrive/jetson/services/asr/stdin_asr.py
+# 逐行输入，Ctrl+C 退出：
+#   现在录着吗              → 播报真实状态（录像/预览/帧率/水位，rtt=2ms）
+#   行车记录仪还剩多少存储    → 播报剩余容量（实测值）
+#   帮我拍张照               → 1080p JPEG 落盘 Jetson ~/voxdrive_snapshots/
+#   停止录像 / 开始录像       → 真实开关 RK 录像并回读确认
+#   打开预览 / 关闭预览       → 开关 RTMP 推流
+#   打开空调制冷模式          → LLM 工具两段循环（演示 mock 车控路径）
+```
+
+同一网段浏览器打开 `http://<jetson-ip>:8888/live/dashcam` 可直接观看行车画面（HLS）。
 
 ## 实测数据
 
