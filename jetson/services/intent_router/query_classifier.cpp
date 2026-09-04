@@ -28,7 +28,7 @@ namespace edge_llm_rag
 
         // 通路 B: 规则引擎 (兜底 + 紧急直通保护)
         QueryFeatures features = analyze_query_features(query);
-        QueryClassification rule_cls = classify_by_rules(features);
+        QueryClassification rule_cls = classify_by_rules(query, features);
 
         // 融合
         QueryClassification final_cls = merge_classifications(semantic_cls, rule_cls);
@@ -67,7 +67,8 @@ namespace edge_llm_rag
         return features;
     }
 
-    QueryClassification QueryClassifier::classify_by_rules(const QueryFeatures &features)
+    QueryClassification QueryClassifier::classify_by_rules(const std::string &query,
+                                                           const QueryFeatures &features)
     {
         QueryClassification cls;
         cls.reasoning = "";
@@ -95,6 +96,22 @@ namespace edge_llm_rag
             cls.reasoning = "规则: 指令词命中";
             return cls;
         }
+
+        // ── 优先级 2.5: 实时车况查询（工具域）──────────────
+        // 车速/油量/电量/续航只有工具能答（手册无"当前值"）；必须走 LLM(agent)
+        // 选工具而非 RAG-only。优先级高于语义通路：E1 实测"查看胎压和车速"
+        // 被语义判 FACTUAL 走 RAG-only 后，车速部分无人应答（回归 case4）。
+        for (const char *w : {"车速", "油量", "电量", "续航", "传感器"})
+            if (query.find(w) != std::string::npos)
+            {
+                cls.query_type = QueryClassification::EXPLICIT_COMMAND;
+                cls.requires_immediate_response = true;
+                cls.needs_rag_context = false;
+                cls.needs_llm          = true;
+                cls.allows_tool_call   = true;
+                cls.reasoning = "规则: 实时车况词命中（工具域）";
+                return cls;
+            }
 
         // ── 优先级 3-6: 原有逻辑 ─────────────────────────────
         if (features.factual_score >= 0.5f)

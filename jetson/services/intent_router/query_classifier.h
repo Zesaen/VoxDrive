@@ -110,7 +110,8 @@ class SemanticRouter;
 
         // ── 新增: 语义路由 ──────────────────────────────────
         QueryClassification classify_by_semantic(const std::string &query);
-        QueryClassification classify_by_rules(const QueryFeatures &features);
+        QueryClassification classify_by_rules(const std::string &query,
+                                              const QueryFeatures &features);
         QueryClassification merge_classifications(
             const QueryClassification &semantic,
             const QueryClassification &rule);
