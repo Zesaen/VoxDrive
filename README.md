@@ -195,8 +195,10 @@ jetson/scripts/run_regression.sh             # 回归测试
 
 ```bash
 ~/Desktop/VoxDrive/jetson/scripts/start_all.sh    # 双板一键：探测/SSH 拉起 RK 录像服务 → Jetson 全栈（含 mediamtx）→ 开预览推流；冷启动实测 23.5s
-~/Desktop/VoxDrive/jetson/scripts/stop_all.sh     # 双板一键停止
-# 可选：--no-preview 只录像不推流；VOX_START_DASHBOARD=1 同时启动 Qt 座舱 GUI（需桌面会话）
+~/Desktop/VoxDrive/jetson/scripts/stop_all.sh     # 双板一键停止服务
+~/Desktop/VoxDrive/jetson/scripts/shutdown_all.sh # 双板一键安全关机（优雅停服务收好当前录像段 → SSH 关 RK → 本机倒计时关机）
+# 可选：start_all --no-preview 只录像不推流；VOX_START_DASHBOARD=1 同时启动 Qt 座舱 GUI（需桌面会话）
+# shutdown_all --no-self 只关 RK / --dry-run 只打印动作
 ```
 
 启动后即可用键盘注入语音查询（走完整 router→跨板工具→LLM→TTS 链，扬声器播报）：
