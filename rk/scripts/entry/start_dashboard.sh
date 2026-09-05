@@ -26,8 +26,10 @@ if [ -z "${XAUTHORITY:-}" ] && [ -f "/run/user/$(id -u)/gdm/Xauthority" ]; then
 fi
 case "${1:-}" in
   --offscreen) export QT_QPA_PLATFORM=offscreen ;;
-  "") [ -n "${QT_QPA_PLATFORM:-}" ] || export QT_QPA_PLATFORM=xcb ;;
-  *) echo "用法: $0 [--offscreen]"; exit 2 ;;
+  --no-preview) [ -n "${QT_QPA_PLATFORM:-}" ] || export QT_QPA_PLATFORM=xcb ;;
+  "")  [ -n "${QT_QPA_PLATFORM:-}" ] || export QT_QPA_PLATFORM=xcb
+       export VOX_DASH_AUTOPREVIEW=1 ;;   # 触摸屏 kiosk 形态默认自动开预览
+  *) echo "用法: $0 [--offscreen|--no-preview]"; exit 2 ;;
 esac
 
 echo "[dash] conf=$VOX_CONF platform=$QT_QPA_PLATFORM display=$DISPLAY"
