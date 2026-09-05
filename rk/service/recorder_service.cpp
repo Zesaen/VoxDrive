@@ -246,6 +246,7 @@ int main(int argc, char** argv) {
   vox::RknnDetector::Params dp;
   dp.model_path = detect_model;
   dp.target_classes = detect_classes;
+  dp.box_thresh = static_cast<float>(vox::config::get_double("rk.detect_box_thresh", 0.25));
   bool detect_on = false;
   if (access(detect_model.c_str(), R_OK) == 0) {
     detect_on = detector.start(dp);
