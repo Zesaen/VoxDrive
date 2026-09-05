@@ -197,17 +197,18 @@ std::vector<std::pair<std::string, std::string>> parse_nav_words(const std::stri
     return out;
 }
 
-// 返回 target 页面 id；无命中返回 ""
-std::string match_nav(const std::string& query,
-                      const std::vector<std::pair<std::string, std::string>>& nav_words) {
+// 命中返回 {target 页面id, 命中的词}（词用于播报文案）；无命中 {"", ""}
+std::pair<std::string, std::string> match_nav(
+    const std::string& query,
+    const std::vector<std::pair<std::string, std::string>>& nav_words) {
     static const char* kVerbs[] = {"打开", "显示", "进入", "回到", "返回", "切换到"};
     bool has_verb = false;
     for (const char* v : kVerbs)
         if (query.find(v) != std::string::npos) { has_verb = true; break; }
-    if (!has_verb) return "";
+    if (!has_verb) return {"", ""};
     for (const auto& [word, target] : nav_words)
-        if (query.find(word) != std::string::npos) return target;
-    return "";
+        if (query.find(word) != std::string::npos) return {target, word};
+    return {"", ""};
 }
 
 // ---------- 下游请求构造 ----------
@@ -393,13 +394,16 @@ int main() {
                                .dump());
 
         // ── 语音导航确定性直通（切页不进 LLM，设计规范 7.3）──
-        if (std::string nav_target = match_nav(text, nav_words); !nav_target.empty()) {
+        if (auto nav_hit = match_nav(text, nav_words); !nav_hit.first.empty()) {
+            const auto& nav_target = nav_hit.first;
+            const std::string& nav_word = nav_hit.second;
             VOX_INFO("[nav] %s -> %s", text.c_str(), nav_target.c_str());
             status_pub.publish(nlohmann::json{{"service", "router"}, {"status", "nav"},
                                               {"target", nav_target}, {"ts", now_ms()}}
                                    .dump());
-            const std::string back =
-                (nav_target == "home") ? "好的，已回到主页" : "好的，已打开页面";
+            const std::string back = (nav_target == "home")
+                                         ? "好的，已回到主页"
+                                         : "好的，已打开" + nav_word;
             nlohmann::json reply{{"found", true}, {"mode", "answer"}, {"text", back},
                                  {"nav", nav_target}};
             server.send(reply.dump());
