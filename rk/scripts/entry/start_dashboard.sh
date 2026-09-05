@@ -31,9 +31,19 @@ case "${1:-}" in
        export VOX_DASH_AUTOPREVIEW=1 ;;   # 触摸屏 kiosk 形态默认自动开预览
   *) echo "用法: $0 [--offscreen|--no-preview]"; exit 2 ;;
 esac
-# UI 缩放：dashboard 按 1600x900 设计，1024x600 屏整体缩到 0.7（逻辑视口≈1464x857）
-# 可用 VOX_DASH_SCALE 覆盖（如 0.8 更大字、0.6 更全视野）
-export QT_SCALE_FACTOR="${VOX_DASH_SCALE:-0.7}"
+
+if [ "$QT_QPA_PLATFORM" != "offscreen" ]; then
+  # X 级缩放：dashboard 按 1600x900 设计，物理屏仅 1024x600——把桌面逻辑分辨率放大到
+  # 1600x938（1.5625 倍）由 GPU 降采样显示，UI 恢复设计比例。注：QT_SCALE_FACTOR 在本板
+  # Qt/驱动组合下首帧后冻结（文字不渲染），故不用 Qt 级缩放；VOX_DASH_SCALE 可显式覆盖。
+  XA="${XAUTHORITY:-/run/user/$(id -u)/gdm/Xauthority}"
+  OUT=$(DISPLAY="$DISPLAY" XAUTHORITY="$XA" xrandr 2>/dev/null | grep ' connected' | head -1 | cut -d' ' -f1)
+  if [ -n "$OUT" ] && [ -z "${VOX_DASH_NO_XSCALE:-}" ]; then
+    DISPLAY="$DISPLAY" XAUTHORITY="$XA" xrandr --output "$OUT" --scale 1.5625x1.5625 2>/dev/null \
+      || echo "[dash] xrandr 缩放失败（沿用物理分辨率）"
+  fi
+fi
+[ -n "${VOX_DASH_SCALE:-}" ] && export QT_SCALE_FACTOR="$VOX_DASH_SCALE"
 
 echo "[dash] conf=$VOX_CONF platform=$QT_QPA_PLATFORM display=$DISPLAY"
 exec python3 "$BOARD_ROOT/jetson/dashboard/dashboard_ui.py" "$@"
