@@ -8,7 +8,9 @@
 #include <stdio.h>
 
 #include <chrono>
+#include <cstring>
 #include <string>
+#include <vector>
 
 #include "mpp_encoder.h"
 #include "v4l2_capture.h"
@@ -28,10 +30,12 @@ int64_t now_ns() {
 int main(int argc, char** argv) {
   int count = 300;  // 30fps 下 10s
   const char* out_path = "/tmp/test_encode.h264";
+  bool synth = false;  // --synth：不用采集，喂强色度合成帧（隔离 V4L2 排障）
   for (int i = 1; i < argc; ++i) {
     std::string s(argv[i]);
     if (s == "--count" && i + 1 < argc) count = std::stoi(argv[++i]);
     else if (s == "--out" && i + 1 < argc) out_path = argv[++i];
+    else if (s == "--synth") synth = true;
     else {
       VOX_ERROR("未知参数 %s", s.c_str());
       return 2;
@@ -48,24 +52,40 @@ int main(int argc, char** argv) {
   cp.fps = vox::config::get_int("rk.capture_fps", 30);
   cp.buffer_count = vox::config::get_int("rk.capture_buffers", 4);
   vox::V4L2Capture cap(cp);
-  if (!cap.start()) {
+  if (!synth && !cap.start()) {
     std::printf("ENCODE_TEST FAIL capture_start\n");
     return 1;
   }
 
   // ---- 编码（与采集协商结果对齐）----
   vox::MppEncoder::Params ep;
-  ep.width = cap.width();
-  ep.height = cap.height();
-  ep.stride = cap.stride();
+  ep.width = synth ? cp.width : cap.width();
+  ep.height = synth ? cp.height : cap.height();
+  ep.stride = synth ? cp.width : cap.stride();
   ep.fps = cp.fps;
   ep.gop = cp.fps * vox::config::get_int("rk.gop_seconds", 2);
   ep.bitrate_bps = vox::config::get_int("rk.bitrate_bps", 4000000);
   vox::MppEncoder enc(ep);
   if (!enc.start()) {
-    cap.stop();
+    if (!synth) cap.stop();
     std::printf("ENCODE_TEST FAIL encoder_start\n");
     return 1;
+  }
+
+  // 合成帧缓冲：强色度（U=100 偏绿 / V=200 偏红，肉眼应见橙红），Y 横向渐变
+  std::vector<uint8_t> synth_y, synth_uv;
+  if (synth) {
+    synth_y.resize(static_cast<size_t>(ep.width) * ep.height);
+    synth_uv.resize(static_cast<size_t>(ep.width) * ep.height / 2);
+    for (uint32_t r = 0; r < ep.height; ++r) {
+      std::memset(synth_y.data() + static_cast<size_t>(r) * ep.width,
+                  40 + (r * 160u) / ep.height, ep.width);  // 纵向 Y 渐变
+    }
+    std::memset(synth_uv.data(), 0, synth_uv.size());
+    for (size_t i = 0; i < synth_uv.size() / 2; ++i) {
+      synth_uv[2 * i] = 100;   // U 低 → 偏绿成分
+      synth_uv[2 * i + 1] = 200;  // V 高 → 偏红
+    }
   }
 
   FILE* out = fopen(out_path, "wb");
@@ -81,7 +101,22 @@ int main(int argc, char** argv) {
   double enc_ms_total = 0, enc_ms_max = 0;
 
   for (int i = 0; i < count; ++i) {
-    const vox::VideoFrame* f = cap.acquire(2000);
+    vox::VideoFrame synth_frame{};
+    const vox::VideoFrame* f;
+    if (synth) {
+      synth_frame.width = ep.width;
+      synth_frame.height = ep.height;
+      synth_frame.format = vox::PixelFormat::NV12;
+      synth_frame.timestamp_ns = now_ns();
+      synth_frame.sequence = i;
+      synth_frame.plane[0] = synth_y.data();
+      synth_frame.plane_stride[0] = ep.width;
+      synth_frame.plane[1] = synth_uv.data();
+      synth_frame.plane_stride[1] = ep.width;
+      f = &synth_frame;
+    } else {
+      f = cap.acquire(2000);
+    }
     if (!f) {
       VOX_ERROR("第 %d/%d 帧获取失败", i + 1, count);
       break;
@@ -95,7 +130,7 @@ int main(int argc, char** argv) {
     const double ms = (now_ns() - t0) / 1e6;
     enc_ms_total += ms;
     if (ms > enc_ms_max) enc_ms_max = ms;
-    cap.release(f);
+    if (!synth) cap.release(f);
 
     if (!ok) {
       VOX_ERROR("第 %d 帧编码硬错误", i + 1);
