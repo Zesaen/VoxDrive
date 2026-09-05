@@ -162,6 +162,7 @@ int main(int argc, char** argv) {
   const int probe_rc = pclose(p);
 
   // ---- 阶段B：水位淘汰 ----
+  usleep(500 * 1000);  // rkisp 流关→流开切换需短暂稳定，否则偶发 DQBUF 报错 0 帧
   bool wm_ok = false;
   if (system(("mkdir -p '" + wm_dir + "'").c_str()) == 0) {
     for (const char* ts : {"20000101_000001", "20000101_000002", "20000101_000003"}) {
@@ -182,6 +183,7 @@ int main(int argc, char** argv) {
   }
 
   // ---- 阶段C（锁段幸存，R10）：watermark=1% 删除风暴中 LOCK_ 段必须幸存 ----
+  usleep(500 * 1000);
   const std::string lock_dir = "/tmp/voxdrive_rec_lock";
   system(("rm -rf '" + lock_dir + "' && mkdir -p '" + lock_dir + "'").c_str());
   for (const char* ts : {"20000101_000004", "20000101_000005"}) {
@@ -207,6 +209,7 @@ int main(int argc, char** argv) {
   }
 
   // ---- 阶段D（锁段配额，R10）：quota=1B → 锁定后立即超配额被释放 ----
+  usleep(500 * 1000);
   bool quota_ok = false;
   {
     double e4 = 0; int s4 = 0; uint64_t lt = 0; uint32_t ln = 99;
