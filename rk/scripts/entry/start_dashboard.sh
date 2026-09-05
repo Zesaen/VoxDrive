@@ -5,7 +5,16 @@
 #   ./start_dashboard.sh --offscreen # 离屏冒烟（无显示环境）
 set -u
 
-BOARD_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# 板根定位：仓库内(rk/scripts/entry/)与板上部署(板根)两处都能向上找到 jetson/
+D="$(cd "$(dirname "$0")" && pwd)"
+BOARD_ROOT=""
+for c in "$D" "$D/.." "$D/../.." "$D/../../.."; do
+  if [ -f "$(cd "$c" 2>/dev/null && pwd)/jetson/dashboard/dashboard_ui.py" ]; then
+    BOARD_ROOT="$(cd "$c" && pwd)"
+    break
+  fi
+done
+[ -n "$BOARD_ROOT" ] || { echo "错误: 从 $D 向上找不到 jetson/dashboard"; exit 1; }
 export VOX_CONF="$BOARD_ROOT/jetson/config/voxdrive.rk.conf"
 export DISPLAY="${DISPLAY:-:0}"
 if [ -z "${XAUTHORITY:-}" ] && [ -f "/run/user/$(id -u)/gdm/Xauthority" ]; then
