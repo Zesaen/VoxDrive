@@ -206,6 +206,9 @@ bool MppEncoder::encode(const VideoFrame& in, const EncodedPacket** out) {
     return false;
   }
   copy_nv12_in(in, static_cast<uint8_t*>(mpp_buffer_get_ptr(buffer)));
+  // ION 缓冲是 cached 映射：CPU 写入后必须 flush（clean）才能让编码器硬件看到。
+  // 缺这步时最后写入的 UV 平面常驻 CPU 缓存、硬件读到清零内存→码流无色度（纯绿画面）
+  mpp_buffer_sync_end(buffer);
 
   mpp_frame_set_width(frame, params_.width);
   mpp_frame_set_height(frame, params_.height);
