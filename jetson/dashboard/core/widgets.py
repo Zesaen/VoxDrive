@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel
                              QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
 from core import icons
-from core.theme import DUR_BASE, DUR_FAST, FONT_MONO, FONT_SANS
+from core.theme import DUR_BASE, DUR_FAST, DUR_SLOW, FONT_MONO, FONT_SANS
 
 
 def font(family, size, weight=400):
