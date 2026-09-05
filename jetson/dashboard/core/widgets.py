@@ -4,7 +4,7 @@
 """
 
 from PyQt5.QtCore import (QEasingCurve, QPointF, QRectF, Qt, QTimer,  # noqa: F401
-                          QVariantAnimation, pyqtSignal)
+                          QPropertyAnimation, QVariantAnimation, pyqtSignal)
 from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                              QPushButton, QSizePolicy, QVBoxLayout, QWidget)
