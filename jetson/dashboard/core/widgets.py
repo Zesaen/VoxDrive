@@ -131,7 +131,10 @@ class ArcGauge(QWidget):
         qp = QPainter(self)
         qp.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        side = min(w, h * 1.2)
+        # 圆环完整落在控件内：直径=min(w,h) 再留一个笔宽（笔以路径居中，两侧各外扩 5px）。
+        # 旧写法 side=h*1.2 使环顶部超出控件 11px 被 Qt 裁剪（顶端削平，2026-09-05 触摸屏实测）
+        pen_w = 10
+        side = max(10.0, float(min(w, h) - pen_w))
         rect = QRectF((w - side) / 2, (h - side) / 2, side, side)
         start, span = 225 * 16, -270 * 16
         pen = QPen(QColor(T.get("track", "#333")), 10)
