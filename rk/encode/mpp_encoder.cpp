@@ -5,11 +5,6 @@
 
 #include <string.h>
 
-#include <errno.h>
-#include <sys/ioctl.h>
-
-#include <linux/dma-buf.h>
-
 #include <chrono>
 #include <thread>
 
@@ -161,27 +156,27 @@ bool MppEncoder::fetch_sps_pps() {
 
 void MppEncoder::copy_nv12_in(const VideoFrame& in, uint8_t* dst) {
   const uint32_t w = params_.width;
+  // UV 平面位于 hor*ver 偏移处（半平面交错，行数为高一半）
+  uint8_t* dst_uv = dst + static_cast<size_t>(hor_stride_) * ver_stride_;
   // 逐平面行距：Y/UV 行距可能不同（rkisp 单平面 NV12 混合布局，见 v4l2_capture）
-  const auto copy_plane = [&](const uint8_t* src, size_t src_stride, uint32_t rows,
-                              uint32_t row_bytes) {
+  const auto copy_plane = [&](uint8_t* d, const uint8_t* src, size_t src_stride,
+                              uint32_t rows, uint32_t row_bytes) {
     if (src_stride == hor_stride_ && row_bytes == hor_stride_) {
       // 快路径：源与目标 stride 一致，整块拷贝
-      memcpy(dst, src, static_cast<size_t>(hor_stride_) * rows);
+      memcpy(d, src, static_cast<size_t>(hor_stride_) * rows);
     } else {
       for (uint32_t r = 0; r < rows; ++r) {
-        memcpy(dst + static_cast<size_t>(r) * hor_stride_,
+        memcpy(d + static_cast<size_t>(r) * hor_stride_,
                src + static_cast<size_t>(r) * src_stride, row_bytes);
       }
     }
   };
   // Y 平面（ver_stride 对齐产生的 padding 行清零，避免读到未初始化内存）
-  copy_plane(static_cast<const uint8_t*>(in.plane[0]), in.plane_stride[0],
+  copy_plane(dst, static_cast<const uint8_t*>(in.plane[0]), in.plane_stride[0],
              params_.height, w);
   memset(dst + static_cast<size_t>(hor_stride_) * params_.height, 0,
          static_cast<size_t>(hor_stride_) * (ver_stride_ - params_.height));
-  // UV 平面位于 hor*ver 偏移处（半平面交错，行数为高一半）
-  uint8_t* dst_uv = dst + static_cast<size_t>(hor_stride_) * ver_stride_;
-  copy_plane(static_cast<const uint8_t*>(in.plane[1]), in.plane_stride[1],
+  copy_plane(dst_uv, static_cast<const uint8_t*>(in.plane[1]), in.plane_stride[1],
              params_.height / 2, w);
   memset(dst_uv + static_cast<size_t>(hor_stride_) * (params_.height / 2), 0,
          static_cast<size_t>(hor_stride_) * (ver_stride_ / 2 - params_.height / 2));
@@ -211,26 +206,8 @@ bool MppEncoder::encode(const VideoFrame& in, const EncodedPacket** out) {
     return false;
   }
   copy_nv12_in(in, static_cast<uint8_t*>(mpp_buffer_get_ptr(buffer)));
-  // ION 缓冲是 cached 映射：CPU 写入后必须 flush（clean）才能让编码器硬件看到。
-  // 缺这步时最后写入的 UV 平面常驻 CPU 缓存、硬件读到清零内存→码流无色度（纯绿画面）
+  // ION 缓冲可能为 cached 映射：CPU 写入后 flush（clean）确保编码器硬件可见
   mpp_buffer_sync_end(buffer);
-  // ---- 临时调试：回读 UV 头部 + 裸 dma-buf flush（替换 libmpp sync 验证） ----
-  {
-    uint8_t* base = static_cast<uint8_t*>(mpp_buffer_get_ptr(buffer));
-    const size_t uv_off = static_cast<size_t>(hor_stride_) * ver_stride_;
-    VOX_INFO("UV readback[%zu..]=%d %d %d %d  Ytail=%d %d", uv_off, base[uv_off],
-             base[uv_off + 1], base[uv_off + 2], base[uv_off + 3],
-             base[static_cast<size_t>(hor_stride_) * params_.height - 2],
-             base[static_cast<size_t>(hor_stride_) * params_.height - 1]);
-    int dfd = mpp_buffer_get_fd(buffer);
-    if (dfd >= 0) {
-      struct dma_buf_sync s {};
-      s.flags = DMA_BUF_SYNC_RW | DMA_BUF_SYNC_END;
-      int r = ioctl(dfd, DMA_BUF_IOCTL_SYNC, &s);
-      VOX_INFO("dma-buf SYNC_END(RW) fd=%d ret=%d errno=%d(%s)", dfd, r, errno,
-               strerror(errno));
-    }
-  }
 
   mpp_frame_set_width(frame, params_.width);
   mpp_frame_set_height(frame, params_.height);
