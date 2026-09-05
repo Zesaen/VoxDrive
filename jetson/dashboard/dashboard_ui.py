@@ -134,7 +134,10 @@ class Dashboard(QMainWindow):
         self.clock.start(1000)
         self._tick()
         self.resize(1600, 900)
-        if os.environ.get("VOX_DASH_FULLSCREEN") == "1":
+        # VOX_DASH_FULLSCREEN=1 强制最大化；屏幕小于设计尺寸（如 RK 触摸屏 1024x600）时也自动最大化
+        geo = QApplication.primaryScreen().availableGeometry() if QApplication.primaryScreen() else None
+        if os.environ.get("VOX_DASH_FULLSCREEN") == "1" or (
+                geo is not None and (geo.width() < 1600 or geo.height() < 900)):
             self.showMaximized()
 
     # ── 插件装配 ─────────────────────────────────────────────────────
