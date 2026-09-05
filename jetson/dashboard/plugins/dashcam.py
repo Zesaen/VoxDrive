@@ -23,6 +23,8 @@ ALERTS = {
     "capture_timeout":     ("danger", "摄像头采集超时，请检查行车记录仪"),
     "rtmp_disconnected":   ("warn",   "预览推流中断，自动重连中"),
     "rtmp_connect_failed": ("warn",   "预览推流连接失败，稍后自动重试"),
+    "detect":              ("info",   "检测到行人/车辆，当前录像段已锁定保护"),
+    "lock_released":       ("info",   "锁定段超出保护配额，已释放最旧锁定段"),
 }
 
 MANIFEST = {
