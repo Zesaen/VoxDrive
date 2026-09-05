@@ -5,6 +5,11 @@
 
 #include <string.h>
 
+#include <errno.h>
+#include <sys/ioctl.h>
+
+#include <linux/dma-buf.h>
+
 #include <chrono>
 #include <thread>
 
@@ -209,6 +214,23 @@ bool MppEncoder::encode(const VideoFrame& in, const EncodedPacket** out) {
   // ION 缓冲是 cached 映射：CPU 写入后必须 flush（clean）才能让编码器硬件看到。
   // 缺这步时最后写入的 UV 平面常驻 CPU 缓存、硬件读到清零内存→码流无色度（纯绿画面）
   mpp_buffer_sync_end(buffer);
+  // ---- 临时调试：回读 UV 头部 + 裸 dma-buf flush（替换 libmpp sync 验证） ----
+  {
+    uint8_t* base = static_cast<uint8_t*>(mpp_buffer_get_ptr(buffer));
+    const size_t uv_off = static_cast<size_t>(hor_stride_) * ver_stride_;
+    VOX_INFO("UV readback[%zu..]=%d %d %d %d  Ytail=%d %d", uv_off, base[uv_off],
+             base[uv_off + 1], base[uv_off + 2], base[uv_off + 3],
+             base[static_cast<size_t>(hor_stride_) * params_.height - 2],
+             base[static_cast<size_t>(hor_stride_) * params_.height - 1]);
+    int dfd = mpp_buffer_get_fd(buffer);
+    if (dfd >= 0) {
+      struct dma_buf_sync s {};
+      s.flags = DMA_BUF_SYNC_RW | DMA_BUF_SYNC_END;
+      int r = ioctl(dfd, DMA_BUF_IOCTL_SYNC, &s);
+      VOX_INFO("dma-buf SYNC_END(RW) fd=%d ret=%d errno=%d(%s)", dfd, r, errno,
+               strerror(errno));
+    }
+  }
 
   mpp_frame_set_width(frame, params_.width);
   mpp_frame_set_height(frame, params_.height);
