@@ -36,7 +36,7 @@ DARK = {
     "pressed":    "rgba(255,255,255,16%)",
     "disabled_fg": "rgba(248,250,252,40%)",
     "scrim":      "rgba(2,6,23,55%)",
-    "track":      "#1B2436",                  # 仪表底槽/进度槽（QPainter 用，须 #hex——QColor 不解析 rgba() 串）
+    "track":      "#222B40",                  # 仪表底槽/车体填充（QPainter 用，须 #hex——QColor 不解析 rgba() 串）
 }
 
 LIGHT = {
@@ -150,7 +150,7 @@ def qss(t):
         border-color: {t['accent']}; font-weight: bold;
     }}
 
-    QScrollArea {{ background: transparent; border: none; }}
+    QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; border: none; }}
     QScrollBar:vertical {{
         background: transparent; width: 8px; margin: 4px;
     }}
