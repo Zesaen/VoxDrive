@@ -31,6 +31,9 @@ case "${1:-}" in
        export VOX_DASH_AUTOPREVIEW=1 ;;   # 触摸屏 kiosk 形态默认自动开预览
   *) echo "用法: $0 [--offscreen|--no-preview]"; exit 2 ;;
 esac
+# UI 缩放：dashboard 按 1600x900 设计，1024x600 屏整体缩到 0.7（逻辑视口≈1464x857）
+# 可用 VOX_DASH_SCALE 覆盖（如 0.8 更大字、0.6 更全视野）
+export QT_SCALE_FACTOR="${VOX_DASH_SCALE:-0.7}"
 
 echo "[dash] conf=$VOX_CONF platform=$QT_QPA_PLATFORM display=$DISPLAY"
 exec python3 "$BOARD_ROOT/jetson/dashboard/dashboard_ui.py" "$@"
