@@ -16,7 +16,11 @@ for c in "$D" "$D/.." "$D/../.." "$D/../../.."; do
 done
 [ -n "$BOARD_ROOT" ] || { echo "错误: 从 $D 向上找不到 jetson/dashboard"; exit 1; }
 export VOX_CONF="$BOARD_ROOT/jetson/config/voxdrive.rk.conf"
-export DISPLAY="${DISPLAY:-:0}"
+# 显示探测：Xorg 由 displayfd 启动时显示号不定（本板为 :1），从 X socket 自动取
+if [ -z "${DISPLAY:-}" ]; then
+  XN=$(ls /tmp/.X11-unix/ 2>/dev/null | sed -n 's/^X//p' | sort -n | head -1)
+  export DISPLAY=":${XN:-0}"
+fi
 if [ -z "${XAUTHORITY:-}" ] && [ -f "/run/user/$(id -u)/gdm/Xauthority" ]; then
   export XAUTHORITY="/run/user/$(id -u)/gdm/Xauthority"
 fi
