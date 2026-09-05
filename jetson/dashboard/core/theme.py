@@ -10,7 +10,7 @@ import pathlib
 import re
 
 from PyQt5.QtCore import QObject, pyqtSignal
-from PyQt5.QtGui import QFontDatabase
+from PyQt5.QtGui import QColor, QFontDatabase
 
 # ── 色板（语义 token；对比度实测见规范 3.1 表）─────────────────────────
 
@@ -36,7 +36,7 @@ DARK = {
     "pressed":    "rgba(255,255,255,16%)",
     "disabled_fg": "rgba(248,250,252,40%)",
     "scrim":      "rgba(2,6,23,55%)",
-    "track":      "rgba(255,255,255,8%)",     # 进度/仪表底槽
+    "track":      "#1B2436",                  # 仪表底槽/进度槽（QPainter 用，须 #hex——QColor 不解析 rgba() 串）
 }
 
 LIGHT = {
@@ -61,7 +61,7 @@ LIGHT = {
     "pressed":    "rgba(15,23,42,10%)",
     "disabled_fg": "rgba(15,23,42,35%)",
     "scrim":      "rgba(226,232,240,70%)",
-    "track":      "rgba(15,23,42,8%)",
+    "track":      "#DDE5EE",
 }
 
 # ── 动效 token（规范 3.4；VOX_DASH_REDUCED_MOTION=1 全部降级为直切）──────
@@ -122,7 +122,7 @@ def qss(t):
     QLabel#t_muted  {{ color: {t['fg_muted']}; font-size: 14px; }}
     QLabel#t_small  {{ color: {t['fg_muted']}; font-size: 12px; }}
     QLabel#t_accent {{ color: {t['accent']};   font-size: 14px; font-weight: 500; }}
-    QLabel[mono="true"] {{ font-family: "{FONT_MONO}"; }}
+    QLabel[mono="true"] {{ font-family: "{FONT_MONO}"; color: {t['fg']}; }}
 
     QPushButton {{
         background: {t['btn_bg']};
@@ -184,6 +184,23 @@ def qss_pill(t):
     """
 
 
+def apply_palette(app, t):
+    """主题感知 QPalette（QSS 覆盖不到的角落：菜单、tooltip、占位文本等）。"""
+    from PyQt5.QtGui import QPalette
+    p = app.palette()
+    p.setColor(QPalette.Window, QColor(t["bg"]))
+    p.setColor(QPalette.WindowText, QColor(t["fg"]))
+    p.setColor(QPalette.Base, QColor(t["card_solid"]))
+    p.setColor(QPalette.Text, QColor(t["fg"]))
+    p.setColor(QPalette.Button, QColor(t["card_solid"]))
+    p.setColor(QPalette.ButtonText, QColor(t["fg"]))
+    p.setColor(QPalette.ToolTipBase, QColor(t["card_solid"]))
+    p.setColor(QPalette.ToolTipText, QColor(t["fg"]))
+    p.setColor(QPalette.Highlight, QColor(t["accent"]))
+    p.setColor(QPalette.HighlightedText, QColor(t["on_accent"]))
+    app.setPalette(p)
+
+
 def save_theme_pref(name):
     """主题偏好落盘（settings 页/顶栏切换共用）：改写 conf 的 dashboard.theme 行。"""
     conf = _find_conf()
@@ -229,6 +246,7 @@ class ThemeManager(QObject):
     def attach_app(self, app):
         self._app = app
         app.setStyleSheet(qss(self.T) + qss_pill(self.T))
+        apply_palette(app, self.T)
 
     @property
     def T(self):
@@ -243,5 +261,6 @@ class ThemeManager(QObject):
         self.name = name
         if self._app:
             self._app.setStyleSheet(qss(self.T) + qss_pill(self.T))
+            apply_palette(self._app, self.T)
         self.theme_changed.emit(self.T)
         save_theme_pref(name)

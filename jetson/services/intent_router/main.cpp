@@ -22,8 +22,12 @@
 #include "ZmqServer.h"
 
 #include <cstring>
+#include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
+
+#include <chrono>
 
 namespace {
 
@@ -169,6 +173,43 @@ const Rule* match_first_rule(const std::string& query) {
     return nullptr;
 }
 
+// ---------- 语音导航（UI v2.0：dashboard 多页 + 插件 nav_words，设计规范 7.3）----------
+// conf dashboard.nav_words = "行车记录:dashcam 车控:vehicle …"（空格分隔 词:页面id）。
+// 触发词（打开/显示/进入/回到/返回）+ 导航词命中即确定性直通切页，不进 LLM。
+// 注意先于 kRules 匹配："打开行车记录"（切页）优先于"行车记录"（状态查询），
+// 而"打开录像"不受影响（"录像"不是导航词）。
+
+int64_t now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+std::vector<std::pair<std::string, std::string>> parse_nav_words(const std::string& conf) {
+    std::vector<std::pair<std::string, std::string>> out;
+    std::istringstream iss(conf);
+    std::string item;
+    while (iss >> item) {
+        auto colon = item.rfind(':');
+        if (colon == std::string::npos || colon == 0 || colon + 1 >= item.size()) continue;
+        out.emplace_back(item.substr(0, colon), item.substr(colon + 1));
+    }
+    return out;
+}
+
+// 返回 target 页面 id；无命中返回 ""
+std::string match_nav(const std::string& query,
+                      const std::vector<std::pair<std::string, std::string>>& nav_words) {
+    static const char* kVerbs[] = {"打开", "显示", "进入", "回到", "返回", "切换到"};
+    bool has_verb = false;
+    for (const char* v : kVerbs)
+        if (query.find(v) != std::string::npos) { has_verb = true; break; }
+    if (!has_verb) return "";
+    for (const auto& [word, target] : nav_words)
+        if (query.find(word) != std::string::npos) return target;
+    return "";
+}
+
 // ---------- 下游请求构造 ----------
 
 nlohmann::json build_llm_request(const std::string& query, const std::string& rag_context,
@@ -288,6 +329,10 @@ int main() {
     const std::string tts_ep = vox::config::connect_endpoint("port.tts_text", "7777");
     auto send_tts_async = [&](const std::string& text) {
         if (text.empty()) return;
+        // UI v2.0 语音上屏：播报文本经 6671 PUB（dashboard 气泡，设计规范 7.2）
+        status_pub.publish(nlohmann::json{{"service", "router"}, {"status", "tts_say"},
+                                          {"tts_text", text}, {"ts", now_ms()}}
+                               .dump());
         std::thread([text, tts_ep]() {
             try {
                 zmq_component::ZmqClient tts_client(tts_ep);
@@ -331,10 +376,36 @@ int main() {
         return llm_resp;
     };
 
+    // ── 语音导航词表（conf 静态表；插件化 dashboard 的 nav_words 汇总，P2 简化口径）──
+    const auto nav_words = parse_nav_words(
+        vox::config::get("dashboard.nav_words",
+                         "行车记录:dashcam 记录仪:dashcam 车控:vehicle 车辆控制:vehicle "
+                         "状态:status 设置:settings 主页:home 首页:home 桌面:home"));
+
     while (true) {
         const std::string text = server.receive();
         VOX_INFO("[asr ->] %s", text.c_str());
         const std::string session_id = "default";
+
+        // ── UI v2.0 语音上屏：用户原文经 6671 PUB（dashboard 字幕，设计规范 7.2）──
+        status_pub.publish(nlohmann::json{{"service", "router"}, {"status", "asr_final"},
+                                          {"asr_text", text}, {"ts", now_ms()}}
+                               .dump());
+
+        // ── 语音导航确定性直通（切页不进 LLM，设计规范 7.3）──
+        if (std::string nav_target = match_nav(text, nav_words); !nav_target.empty()) {
+            VOX_INFO("[nav] %s -> %s", text.c_str(), nav_target.c_str());
+            status_pub.publish(nlohmann::json{{"service", "router"}, {"status", "nav"},
+                                              {"target", nav_target}, {"ts", now_ms()}}
+                                   .dump());
+            const std::string back =
+                (nav_target == "home") ? "好的，已回到主页" : "好的，已打开页面";
+            nlohmann::json reply{{"found", true}, {"mode", "answer"}, {"text", back},
+                                 {"nav", nav_target}};
+            server.send(reply.dump());
+            send_tts_async(back);
+            continue;
+        }
 
         // ── dashcam 域确定性直通（D2/R7）：命中即执行工具，LLM 只组织播报 ──
         // 真设备控制不交给 LLM 猜：Qwen2.5-1.5B 在 7 个工具间选择不可靠（实测
