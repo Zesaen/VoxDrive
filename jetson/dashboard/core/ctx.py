@@ -36,18 +36,20 @@ class ZmqHub(QThread):
         self.ok = True
 
     def run(self):
+        # Jetson 七服务主机：默认本机；dashboard 部署在 RK 触摸屏时经 conf jetson.ip 跨板连
+        jhost = vox_config.get("jetson.ip", "localhost")
         ctx = zmq.Context()
         socks = {}
         for ep, sig in [
-            (vox_config.connect_endpoint("port.tool_bus_pub", "6670"), self.sig_state),
-            (vox_config.connect_endpoint("port.intent_router_pub", "6671"), self.sig_status),
+            (vox_config.connect_endpoint("port.tool_bus_pub", "6670", jhost), self.sig_state),
+            (vox_config.connect_endpoint("port.intent_router_pub", "6671", jhost), self.sig_status),
         ]:
             s = ctx.socket(zmq.SUB)
             s.connect(ep)
             s.setsockopt(zmq.SUBSCRIBE, b"")
             socks[s] = sig
         s_tts = ctx.socket(zmq.SUB)
-        s_tts.connect(vox_config.connect_endpoint("port.tts_pub", "6678"))
+        s_tts.connect(vox_config.connect_endpoint("port.tts_pub", "6678", jhost))
         s_tts.setsockopt(zmq.SUBSCRIBE, b"")
         socks[s_tts] = self.sig_play_end
         s_rk = ctx.socket(zmq.SUB)
@@ -282,7 +284,8 @@ def _tool_req(req):
         sk = ctx.socket(zmq.REQ)
         sk.setsockopt(zmq.RCVTIMEO, 2000)
         sk.setsockopt(zmq.LINGER, 0)
-        sk.connect(vox_config.connect_endpoint("port.tool_bus", "6669"))
+        sk.connect(vox_config.connect_endpoint("port.tool_bus", "6669",
+                                             vox_config.get("jetson.ip", "localhost")))
         sk.send_string(json.dumps(req))
         reply = sk.recv_string()
         sk.close()
