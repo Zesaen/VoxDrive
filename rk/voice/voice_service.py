@@ -234,7 +234,7 @@ def asr_worker(ctx, engine):
     ev.setsockopt_string(zmq.SUBSCRIBE, "")
     ev.setsockopt(zmq.LINGER, 0)
     ev.connect(f"tcp://{jhost}:{conf('port.intent_router_pub', '6671')}")
-    ev.connect(f"tcp://{jhost}:{conf('port.tts_play_end', '6678')}")
+    ev.connect(f"tcp://{jhost}:{conf('port.tts_pub', '6678')}")
     muted = False
     muted_since = 0.0
     unmute_at = 0.0
@@ -278,7 +278,7 @@ def asr_worker(ctx, engine):
                 muted, muted_since = True, now2
                 engine.reset()
                 log("asr", "播报开始，识别静音")
-            elif '"play_end"' in msg and muted:
+            elif msg.strip() == "play_end" and muted:  # tts_server 发裸字符串
                 unmute_at = now2 + float(conf("voice.unmute_tail_s", "0.6"))
                 log("asr", "播报结束，%.1fs 后解除静音" % (unmute_at - now2))
         if muted:
