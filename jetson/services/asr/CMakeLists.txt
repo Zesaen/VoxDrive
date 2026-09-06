@@ -49,6 +49,23 @@ add_executable(sherpa-onnx-microphone
     microphone.cc
 )
 
+# R14：ASR 推理下沉 RK NPU 后的 Jetson 侧采集件（仅 portaudio + zmq，无 sherpa 依赖）
+add_executable(mic_stream mic_stream.cc)
+target_include_directories(mic_stream PRIVATE
+    ${ZMQ_COMM_KIT_DIR}/include
+    ${VOX_COMMON_DIR}
+)
+target_link_libraries(mic_stream
+    ${ZMQ_COMM_KIT_DIR}/build/libzmq_component.so
+    portaudio
+    zmq
+    Threads::Threads
+)
+set_target_properties(mic_stream PROPERTIES
+    BUILD_RPATH "${ZMQ_COMM_KIT_DIR}/build"
+    INSTALL_RPATH "${ZMQ_COMM_KIT_DIR}/build"
+)
+
 # ---- link libraries ----------------------------------------------------
 target_link_libraries(sherpa-onnx-microphone
     # sherpa-onnx core + its bundled deps

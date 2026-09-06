@@ -12,6 +12,7 @@ struct AudioMessage {
     std::unique_ptr<int16_t[]> data;
     size_t length;
     bool is_last = false;
+    float speed = 1.0f;  // R14：RK 合成音频采样率/16000（AudioPlayer 按此开设备）
 };
 
 class DoubleMessageQueue {
@@ -19,7 +20,7 @@ public:
     void push_text(const std::string &msg);
     std::string pop_text();
     
-    void push_audio(std::unique_ptr<int16_t[]> data, size_t length, bool is_last = false);
+    void push_audio(std::unique_ptr<int16_t[]> data, size_t length, bool is_last = false, float speed = 1.0f);
     AudioMessage pop_audio();
     
     void stop();

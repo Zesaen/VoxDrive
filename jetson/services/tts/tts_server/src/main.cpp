@@ -44,11 +44,11 @@ void synthesis_worker(DoubleMessageQueue &queue, TTSModel &model) {
             if (wav && audio_len > 0) {
                 auto audio = std::make_unique<int16_t[]>(audio_len);
                 memcpy(audio.get(), wav, audio_len * sizeof(int16_t));
-                queue.push_audio(std::move(audio), audio_len, first_msg);
+                queue.push_audio(std::move(audio), audio_len, first_msg, model.last_speed());
                 model.free_data(wav);
             }
         } else {
-            queue.push_audio(std::make_unique<int16_t[]>(0), 0, first_msg);
+            queue.push_audio(std::make_unique<int16_t[]>(0), 0, first_msg, model.last_speed());
         }
     }
 }
@@ -59,7 +59,7 @@ void playback_worker(DoubleMessageQueue &queue, AudioPlayer &player,
         auto msg = queue.pop_audio();
         if (msg.data == nullptr) break;
         VOX_DEBUG("play %zu samples, is_last=%d", msg.length, msg.is_last ? 1 : 0);
-        player.play(msg.data.get(), msg.length * sizeof(int16_t), 1.0f);
+        player.play(msg.data.get(), msg.length * sizeof(int16_t), msg.speed);
         if (msg.is_last) {
             VOX_INFO("play_end 发布");
             play_end_pub.publish("play_end");
@@ -71,7 +71,8 @@ int main(int argc, char **argv) {
     if (!vox::config::load()) VOX_WARN("未找到 voxdrive.conf，端口/模型路径使用内置默认值");
 
     const std::string model_path = argc > 1 ? argv[1] : vox::config::get("model.tts", "");
-    if (model_path.empty()) {
+    const bool rk_engine = vox::config::get("tts.engine", "local") == "rk_npu";
+    if (model_path.empty() && !rk_engine) {
         VOX_ERROR("缺少模型路径（argv[1] 或 conf model.tts）");
         return 1;
     }

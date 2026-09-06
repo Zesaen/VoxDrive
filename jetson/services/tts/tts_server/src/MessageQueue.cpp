@@ -23,9 +23,9 @@ std::string DoubleMessageQueue::pop_text()
     return msg;
 }
 
-void DoubleMessageQueue::push_audio(std::unique_ptr<int16_t[]> data, size_t length, bool is_last)
+void DoubleMessageQueue::push_audio(std::unique_ptr<int16_t[]> data, size_t length, bool is_last, float speed)
 {
-    AudioMessage msg{std::move(data), length, is_last};
+    AudioMessage msg{std::move(data), length, is_last, speed};
     {
         std::lock_guard<std::mutex> lock(audio_mutex_);
         audio_queue_.push(std::move(msg));

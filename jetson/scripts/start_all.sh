@@ -23,11 +23,13 @@ RK_USER=$(awk -F= '$1 ~ /^rk\.ssh_user[[:space:]]*$/ {sub(/#.*/,"",$2); gsub(/^[
 RK_USER="${RK_USER:-cat}"
 PREVIEW=1
 DASH_UI=0
+AUTOMIC="${VOX_AUTOMIC:-0}"
 for arg in "$@"; do
     case "$arg" in
         --no-preview) PREVIEW=0 ;;
         --ui) DASH_UI=1 ;;
-        *) printf '[WARN] 未知参数: %s（可用：--ui / --no-preview）\n' "$arg" ;;
+        --mic) AUTOMIC=1 ;;
+        *) printf '[WARN] 未知参数: %s（可用：--ui / --no-preview / --mic）\n' "$arg" ;;
     esac
 done
 [ "${VOX_START_DASHBOARD:-0}" = "1" ] && DASH_UI=1
@@ -78,6 +80,14 @@ else
     fi
 fi
 
+# ── ①' RK voice_service（R14：ASR/TTS 推理下沉；TTS 引擎 rk_npu 依赖此服务）──
+if ssh -o BatchMode=yes -o ConnectTimeout=6 "$RK_USER@$RK_IP"      "~/Desktop/VoxDrive/start_voice.sh" 2>/dev/null; then
+    :
+else
+    printf '[WARN] RK voice_service 启动失败/SSH 不可达——TTS 将回退本地引擎，ASR 走 RK 不可用
+'
+fi
+
 # ── ② Jetson 全栈（含 mediamtx）──
 if [ "$DASH_UI" = "1" ]; then
     export VOX_START_DASHBOARD=1
@@ -89,6 +99,20 @@ if [ "$DASH_UI" = "1" ]; then
     fi
 fi
 "$SCRIPT_DIR/start_core.sh" || exit 1
+
+# ── ②' Jetson mic_stream（R14：麦克风 PCM → RK NPU ASR；--mic 或 VOX_AUTOMIC=1 启动）──
+if [ "$AUTOMIC" = "1" ]; then
+    if pgrep -x mic_stream >/dev/null 2>&1; then
+        printf '[OK] mic_stream 已在运行
+'
+    else
+        (nohup ~/Desktop/VoxDrive/jetson/services/asr/build/mic_stream > /tmp/mic_stream.log 2>&1 &)
+        sleep 1
+        pgrep -x mic_stream >/dev/null 2>&1             && printf '[OK] mic_stream 已启动（PCM → %s:6711）
+' "$RK_IP" 6711             || printf '[WARN] mic_stream 启动失败（日志 /tmp/mic_stream.log）
+'
+    fi
+fi
 
 # ── ③ 预览推流 ──
 if [ "$PREVIEW" = "1" ]; then
