@@ -31,6 +31,39 @@
 
 namespace {
 
+// 本板可听播放（音箱接在 RK USB 声卡；Jetson 侧 AudioPlayer 保留块门/时序语义，其输出不可听）
+const char *kPlayWav = "/tmp/vox_tts_play.wav";
+
+void play_local(const std::map<std::string, std::string> &kv, const std::string &sink,
+                const int16_t *wav, int32_t n) {
+    if (conf_get(kv, "voice.play_local", "1") != "1" || n <= 0) return;
+    // 写 wav（16k mono s16；paplay 负责重采样到 sink）
+    std::ofstream f(kPlayWav, std::ios::binary | std::ios::trunc);
+    if (!f) return;
+    const int32_t data_bytes = n * 2, sr = 16000, ch = 1, bits = 16;
+    const int32_t byte_rate = sr * ch * bits / 8, block_align = ch * bits / 8;
+    f.write("RIFF", 4);
+    int32_t sz = 36 + data_bytes; f.write(reinterpret_cast<const char *>(&sz), 4);
+    f.write("WAVEfmt ", 8);
+    int32_t fmt_len = 16; f.write(reinterpret_cast<const char *>(&fmt_len), 4);
+    int16_t fmt = 1, bc = ch, bb = bits;  // PCM
+    f.write(reinterpret_cast<const char *>(&fmt), 2);
+    f.write(reinterpret_cast<const char *>(&bc), 2);
+    f.write(reinterpret_cast<const char *>(&sr), 4);
+    f.write(reinterpret_cast<const char *>(&byte_rate), 4);
+    f.write(reinterpret_cast<const char *>(&block_align), 2);
+    f.write(reinterpret_cast<const char *>(&bb), 2);
+    f.write("data", 4);
+    f.write(reinterpret_cast<const char *>(&data_bytes), 4);
+    f.write(reinterpret_cast<const char *>(wav), data_bytes);
+    f.close();
+    // 掐掉上一条避免叠音；nohup 后台播，不阻塞 REP 循环
+    std::string cmd = "pkill -f '[p]aplay.*vox_tts_play' 2>/dev/null; nohup paplay " +
+                      std::string(kPlayWav) + " --device='" + sink + "' >/dev/null 2>&1 &";
+    std::system(cmd.c_str());
+}
+
+
 void log(const char *tag, const char *fmt, ...) {
     char timebuf[16];
     std::time_t t = std::time(nullptr);
@@ -89,6 +122,9 @@ int main(int argc, char **argv) {
         expand_home(conf_get(kv, "voice.tts_bin", "$HOME/rk_tts/single_speaker_fast.bin"));
     std::string port = conf_get(kv, "voice.tts_rep", "6720");
     float length_scale = std::atof(conf_get(kv, "voice.tts_length_scale", "1.0").c_str());
+    const std::string spk_sink = conf_get(
+        kv, "voice.spk_sink",
+        "alsa_output.usb-Jieli_Technology_UACDemoV1.0_4150354132313206-00.analog-stereo");
 
     std::vector<char> path(model_path.begin(), model_path.end());
     path.push_back('\0');
@@ -144,11 +180,12 @@ int main(int argc, char **argv) {
         std::string pcm_b64 =
             vox::b64_encode(reinterpret_cast<const uint8_t *>(wav),
                             static_cast<size_t>(audio_len) * sizeof(int16_t));
-        tts_free_data(wav);
         nlohmann::json rep_json{{"ok", true}, {"sr", 16000},
                                  {"frames", audio_len}, {"ms", ms}, {"pcm", pcm_b64}};
         std::string payload = rep_json.dump();
         zmq_send(rep, payload.data(), payload.size(), 0);
+        play_local(kv, spk_sink, wav, audio_len);
+        tts_free_data(wav);
         log("tts", "synth %s (%d 样本 %dms)", text.substr(0, 24).c_str(), audio_len, ms);
     }
 }
