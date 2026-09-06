@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdarg>
 #include <cstring>
 #include <ctime>
 #include <fstream>
