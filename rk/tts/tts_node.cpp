@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstdarg>
 #include <cstring>
+#include <chrono>
 #include <ctime>
 #include <fstream>
 #include <map>
@@ -128,10 +129,13 @@ int main(int argc, char **argv) {
             zmq_send(rep, "{\"ok\":false,\"err\":\"empty text\"}", 30, 0);
             continue;
         }
-        std::clock_t c0 = std::clock();
+        auto t0 = std::chrono::steady_clock::now();
         int32_t audio_len = 0;
         int16_t *wav = synth.infer(text, 0, length_scale, audio_len);
-        int ms = static_cast<int>((std::clock() - c0) * 1000 / CLOCKS_PER_SEC);
+        // 墙钟口径：std::clock() 是多线程 CPU 时间总和（OpenMP 下虚高 ~7x）
+        int ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count());
         if (!wav || audio_len <= 0) {
             log("tts", "synth 失败: %s", text.c_str());
             zmq_send(rep, "{\"ok\":false,\"err\":\"synth failed\"}", 31, 0);
