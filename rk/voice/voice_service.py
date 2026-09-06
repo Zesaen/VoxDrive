@@ -339,20 +339,22 @@ def asr_worker(ctx, engine):
     utt_start = time.time()
     last_voice = time.time()
     while not stop_flag:
+        # 超时也落到终点判定：流停推后（mic 断/尾静音）最后一utterance必须能出终点
+        pcm = None
         try:
             pull.setsockopt(zmq.RCVTIMEO, 200)
-            data = pull.recv()
+            pcm = np.frombuffer(pull.recv(), dtype=np.float32)
         except zmq.Again:
-            continue
-        pcm = np.frombuffer(data, dtype=np.float32)
-        engine.accept_pcm(pcm)
-        engine.decode_available()
-        # 能量 VAD 定终点：不能按 token 输出间隔判静音——整词单 token 的语言
-        # （英文 BPE）正常语音间隔可超 1s，会造成句中假终点+冷启动碎片
-        if float(np.sqrt(np.mean(pcm * pcm))) > vad_rms:
-            last_voice = time.time()
-        voiced = len(engine.hyp) > 0
+            pass
         now = time.time()
+        if pcm is not None:
+            engine.accept_pcm(pcm)
+            engine.decode_available()
+            # 能量 VAD 定终点：不能按 token 输出间隔判静音——整词单 token 的语言
+            # （英文 BPE）正常语音间隔可超 1s，会造成句中假终点+冷启动碎片
+            if float(np.sqrt(np.mean(pcm * pcm))) > vad_rms:
+                last_voice = now
+        voiced = len(engine.hyp) > 0
         if not voiced and now - utt_start > 15:  # 无人说话也重置，防缓冲无限增长
             engine.reset()
             utt_start = now
