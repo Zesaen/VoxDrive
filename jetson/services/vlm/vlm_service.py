@@ -61,7 +61,12 @@ def conf(key, default):
 
 
 def expand(p):
-    return os.path.expanduser(p) if p.startswith(("$HOME", "~")) else p
+    """conf 值里的 $HOME 展开（expanduser 只认 ~，不认 $HOME）"""
+    if not p:
+        return p
+    if p.startswith("$HOME"):
+        p = os.environ.get("HOME", "") + p[5:]
+    return os.path.expanduser(p)
 
 
 def evict_pages(paths):
