@@ -1,39 +1,56 @@
 #!/usr/bin/env bash
-# start_voice — RK 语音推理服务入口（R14：ASR/TTS 推理下沉 RK NPU）
+# start_voice — RK 语音推理服务入口（R14：ASR/TTS 推理下沉 RK）
 # 板根顶层入口：~/Desktop/VoxDrive/start_voice.sh（sync_to_rk.sh 自动部署）
 # 用法: ./start_voice.sh [--stop]
-#   启动: nohup voice_service.py，日志 ~/voxdrive_voice.log，PID 落 /tmp/voxdrive_voice.pid
-#   依赖: rknnlite(已装 ~/.local) + kaldi-native-fbank + onnxruntime + jieba + pyzmq
+#   启动: voice_service.py（ASR，NPU 三模型）+ tts_node（TTS，SummerTTS CPU 引擎）
+#   日志: ~/voxdrive_voice.log（ASR）/ ~/voxdrive_tts.log（TTS）
+#   PID:  /tmp/voxdrive_voice.pid / /tmp/voxdrive_tts.pid
 set -e
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-LOG="$HOME/voxdrive_voice.log"
-PIDFILE="/tmp/voxdrive_voice.pid"
+CONF="$ROOT/jetson/config/voxdrive.rk.conf"
+VLOG="$HOME/voxdrive_voice.log"
+TLOG="$HOME/voxdrive_tts.log"
+VPID="/tmp/voxdrive_voice.pid"
+TPID="/tmp/voxdrive_tts.pid"
+
+stop_one() {  # $1=pidfile $2=pkill 模式
+    if [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; then
+        kill "$(cat "$1")" && echo "已停止 ($(cat $1))"
+    else
+        pkill -f "$2" && echo "已停止 (pkill $2)" || true
+    fi
+    rm -f "$1"
+}
 
 if [ "$1" = "--stop" ]; then
-    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-        kill "$(cat "$PIDFILE")" && echo "voice_service 已停止 (pid $(cat "$PIDFILE"))"
-    else
-        pkill -f "[v]oice_service.py" && echo "voice_service 已停止 (pkill)" || echo "未在运行"
-    fi
-    rm -f "$PIDFILE"
+    stop_one "$VPID" "[v]oice_service.py"
+    stop_one "$TPID" "[t]ts_node"
     exit 0
 fi
 
-if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-    echo "voice_service 已在运行 (pid $(cat "$PIDFILE"))，如需重启先 --stop"
-    exit 0
-fi
-
-cd "$ROOT"
-nohup python3 rk/voice/voice_service.py >> "$LOG" 2>&1 &
-echo $! > "$PIDFILE"
-sleep 2
-if kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-    echo "voice_service 已启动 (pid $(cat "$PIDFILE"))，日志 $LOG"
-    tail -3 "$LOG" || true
+# ASR：voice_service.py
+if [ -f "$VPID" ] && kill -0 "$(cat "$VPID")" 2>/dev/null; then
+    echo "voice_service 已在运行 (pid $(cat "$VPID"))"
 else
-    echo "启动失败，日志尾部："
-    tail -15 "$LOG" || true
-    rm -f "$PIDFILE"
-    exit 1
+    cd "$ROOT"
+    nohup python3 rk/voice/voice_service.py >> "$VLOG" 2>&1 &
+    echo $! > "$VPID"
+    sleep 2
+    kill -0 "$(cat "$VPID")" 2>/dev/null || { echo "voice_service 启动失败"; tail -5 "$VLOG"; rm -f "$VPID"; exit 1; }
+    echo "voice_service 已启动 (pid $(cat "$VPID"))，日志 $VLOG"
+fi
+
+# TTS：tts_node（SummerTTS）
+if [ -f "$TPID" ] && kill -0 "$(cat "$TPID")" 2>/dev/null; then
+    echo "tts_node 已在运行 (pid $(cat "$TPID"))"
+else
+    if [ ! -x "$ROOT/rk/tts/build/tts_node" ]; then
+        echo "[WARN] tts_node 未编译（rk/tts/build/tts_node 缺失），TTS 下沉不可用，仅启动 ASR"
+        exit 0
+    fi
+    nohup "$ROOT/rk/tts/build/tts_node" "$CONF" >> "$TLOG" 2>&1 &
+    echo $! > "$TPID"
+    sleep 2
+    kill -0 "$(cat "$TPID")" 2>/dev/null || { echo "tts_node 启动失败"; tail -5 "$TLOG"; rm -f "$TPID"; exit 1; }
+    echo "tts_node 已启动 (pid $(cat "$TPID"))，日志 $TLOG"
 fi

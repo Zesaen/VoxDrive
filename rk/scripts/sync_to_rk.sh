@@ -7,12 +7,12 @@ set -euo pipefail
 
 BOARD="${VOX_RK_BOARD:-lubancat}"
 REMOTE_DIR="${VOX_RK_DIR:-\$HOME/Desktop/VoxDrive}"
-PATHSPEC="${1:-rk jetson/common jetson/config jetson/dashboard}"
+PATHSPEC="${1:-rk jetson/common jetson/config jetson/dashboard jetson/services/tts}"
 
 # 仓库根（脚本位于 rk/scripts/）
 cd "$(dirname "$0")/../.."
 
-if [ -n "$(git status --porcelain -- rk jetson/common jetson/config jetson/dashboard)" ]; then
+if [ -n "$(git status --porcelain -- rk jetson/common jetson/config jetson/dashboard jetson/services/tts)" ]; then
   echo "警告：rk/ 或 jetson/* 有未提交改动，本次只送已提交内容"
 fi
 
