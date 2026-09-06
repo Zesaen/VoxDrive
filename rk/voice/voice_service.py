@@ -309,51 +309,62 @@ def asr_worker(ctx, engine):
     block_ep = f"tcp://{jhost}:{conf('port.tts_block', '6677')}"
     endpoint_sil = float(conf("voice.endpoint_sil_s", "0.7"))
     max_utt_s = float(conf("voice.max_utt_s", "30"))
+    vad_rms = float(conf("voice.vad_rms", "0.006"))
+
+    def dispatch(text):
+        """终点后转发（gate→router）。独立线程：router 含 LLM 可达秒级，不能阻塞采音循环"""
+        try:
+            gate = ctx.socket(zmq.REQ)
+            gate.setsockopt(zmq.RCVTIMEO, 1000)
+            gate.setsockopt(zmq.LINGER, 0)
+            gate.connect(block_ep)
+            gate.send_string("block")
+            gate.recv_string()
+            gate.close()
+        except zmq.ZMQError:
+            pass
+        try:
+            r = ctx.socket(zmq.REQ)
+            r.setsockopt(zmq.RCVTIMEO, 8000)
+            r.setsockopt(zmq.LINGER, 0)
+            r.connect(router_ep)
+            r.send_string(text)
+            reply = r.recv_string()
+            log("asr", f"router: {reply[:120]}")
+            r.close()
+        except zmq.ZMQError as e:
+            log("asr", f"router REQ 失败: {e}")
 
     engine.reset()
     utt_start = time.time()
+    last_voice = time.time()
     while not stop_flag:
         try:
             pull.setsockopt(zmq.RCVTIMEO, 200)
             data = pull.recv()
         except zmq.Again:
             continue
-        engine.accept_pcm(np.frombuffer(data, dtype=np.float32))
-        _, decoded = engine.decode_available()
-        silence = (decoded - engine.last_emit_frame) * 0.01
+        pcm = np.frombuffer(data, dtype=np.float32)
+        engine.accept_pcm(pcm)
+        engine.decode_available()
+        # 能量 VAD 定终点：不能按 token 输出间隔判静音——整词单 token 的语言
+        # （英文 BPE）正常语音间隔可超 1s，会造成句中假终点+冷启动碎片
+        if float(np.sqrt(np.mean(pcm * pcm))) > vad_rms:
+            last_voice = time.time()
         voiced = len(engine.hyp) > 0
-        idle_reset = not voiced and (time.time() - utt_start) > 15  # 无人说话也重置，防缓冲无限增长
-        if idle_reset:
+        now = time.time()
+        if not voiced and now - utt_start > 15:  # 无人说话也重置，防缓冲无限增长
             engine.reset()
-            utt_start = time.time()
-        elif voiced and silence >= endpoint_sil or (time.time() - utt_start) > max_utt_s and voiced:
+            utt_start = now
+            last_voice = now
+        elif voiced and (now - last_voice >= endpoint_sil or now - utt_start > max_utt_s):
             engine.flush_tail()
             text = engine.text()
             if text:
                 log("asr", f"final: {text!r}")
-                try:
-                    gate = ctx.socket(zmq.REQ)
-                    gate.setsockopt(zmq.RCVTIMEO, 1000)
-                    gate.setsockopt(zmq.LINGER, 0)
-                    gate.connect(block_ep)
-                    gate.send_string("block")
-                    gate.recv_string()
-                    gate.close()
-                except zmq.ZMQError:
-                    pass
-                try:
-                    r = ctx.socket(zmq.REQ)
-                    r.setsockopt(zmq.RCVTIMEO, 8000)
-                    r.setsockopt(zmq.LINGER, 0)
-                    r.connect(router_ep)
-                    r.send_string(text)
-                    reply = r.recv_string()
-                    log("asr", f"router: {reply[:120]}")
-                    r.close()
-                except zmq.ZMQError as e:
-                    log("asr", f"router REQ 失败: {e}")
+                threading.Thread(target=dispatch, args=(text,), daemon=True).start()
             engine.reset()
-            utt_start = time.time()
+            utt_start = now
 
 
 def tts_worker(ctx, engine):
