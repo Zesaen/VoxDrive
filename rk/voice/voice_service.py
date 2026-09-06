@@ -77,12 +77,17 @@ def log(tag, msg):
 class AsrEngine:
     def __init__(self, model_dir):
         from rknnlite.api import RKNNLite
-        from kaldi_native_fbank import OnlineFbank, OnlineFeatureOptions
+        # 与生产 sherpa-onnx FeatureExtractor 逐位一致（feat_0.bin 对拍 maxabs=0 验证）：
+        # snip_edges=False + mel 20..-400Hz 是 sherpa 默认、knf 默认不同，必须显式设
+        from kaldi_native_fbank import OnlineFbank, FbankOptions
 
-        opt = OnlineFeatureOptions()
+        opt = FbankOptions()
         opt.frame_opts.samp_freq = 16000
         opt.frame_opts.dither = 0
-        opt.num_mel_bins = 80
+        opt.frame_opts.snip_edges = False
+        opt.mel_opts.num_bins = 80
+        opt.mel_opts.low_freq = 20
+        opt.mel_opts.high_freq = -400
         self._fbank_cls = OnlineFbank
         self._fbank_opt = opt
 
@@ -121,14 +126,15 @@ class AsrEngine:
         self.last_emit_frame = 0   # 最近一次出非 blank token 的帧（终点检测用）
 
     def accept_pcm(self, pcm_f32):
-        self.fbank.AcceptWaveform(16000, pcm_f32)
+        self.fbank.accept_waveform(16000, pcm_f32)
 
     def decode_available(self):
         """消费到 nframes-WIN+1（保证整窗）；返回 (新增 token 数, 已解码总帧数)"""
-        n = self.fbank.NumFramesReady()
+        n = self.fbank.num_frames_ready
         new_tok = 0
         while self.t + WIN <= n:
-            win = np.stack([self.fbank.GetFrame(i) for i in range(self.t, self.t + WIN)])
+            win = np.stack([np.asarray(self.fbank.get_frame(i), dtype=np.float32)
+                            for i in range(self.t, self.t + WIN)])
             outs = self.enc.inference(inputs=self._feeds(win))
             enc_out = np.asarray(outs[0]).reshape(-1, 512).astype(np.float32)
             self.states = dict(zip(self.order[1:], [np.asarray(o) for o in outs[1:]]))
@@ -141,10 +147,10 @@ class AsrEngine:
 
     def flush_tail(self):
         """终点后补零冲出尾窗剩余解码（Eval 同款 repeat-pad 兜底）"""
-        n = self.fbank.NumFramesReady()
+        n = self.fbank.num_frames_ready
         while self.t < n:
             idx = [min(i, n - 1) for i in range(self.t, self.t + WIN)]
-            win = np.stack([self.fbank.GetFrame(i) for i in idx])
+            win = np.stack([np.asarray(self.fbank.get_frame(i), dtype=np.float32) for i in idx])
             outs = self.enc.inference(inputs=self._feeds(win))
             enc_out = np.asarray(outs[0]).reshape(-1, 512).astype(np.float32)
             self.states = dict(zip(self.order[1:], [np.asarray(o) for o in outs[1:]]))
