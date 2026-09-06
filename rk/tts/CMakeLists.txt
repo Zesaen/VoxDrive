@@ -19,6 +19,7 @@ set(ENGINE_SOURCES
     ${TTS_ROOT}/src/tn/glog/src/symbolize.cc
     ${TTS_ROOT}/src/tn/glog/src/utilities.cc
     ${TTS_ROOT}/src/tn/glog/src/vlog_is_on.cc
+    ${TTS_ROOT}/src/tn/glog/src/signalhandler.cc
     ${TTS_ROOT}/src/tn/gflags/src/gflags.cc
     ${TTS_ROOT}/src/tn/gflags/src/gflags_reporting.cc
     ${TTS_ROOT}/src/tn/gflags/src/gflags_completions.cc
