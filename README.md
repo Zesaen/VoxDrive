@@ -123,7 +123,7 @@ EncodedPacket { Annex-B H.264 访问单元 + is_keyframe + 时间戳 }
 ### Jetson 侧（`jetson/`）
 
 - **公共地基 `common/`**：`voxdrive.conf` 统一管理全部端口/路径/超时（含 RK 节点地址，网络形态变化不改代码）；`vox_log` 毫秒时间戳日志（延迟对账地基）；`msg_envelope` 跨板消息信封；vendored nlohmann/json。
-- **七服务**：asr（Jetson 侧 mic_stream PUSH 通路保留；线上语音入口为 RK 侧 `rk/voice/voice_service`：fbank→NPU 流式解码→REQ 路由）、intent_router（规则+语义双路，`respond`/`tool_call` 两类 JSON 约束 + dashcam/vlm 域直通）、rag（车辆手册向量库，阈值过滤 + embed 端点）、llm（llama.cpp server HTTP 代理）、tool_bus（本地车控/传感工具 + 跨板工具注册表）、tts（SummerTTS 引擎 + 三端口握手；合成请求转 RK `rk/tts/tts_node` 板端合成、本板可听播报）、dashboard（PyQt5 插件化宿主，Jetson 桌面/RK 触摸屏双端部署）。
+- **七服务**：asr（Jetson 侧仅存 stdin_asr 键盘注入联调工具；线上语音入口为 RK 侧 `rk/voice/voice_service`：fbank→NPU 流式解码→REQ 路由）、intent_router（规则+语义双路，`respond`/`tool_call` 两类 JSON 约束 + dashcam/vlm 域直通）、rag（车辆手册向量库，阈值过滤 + embed 端点）、llm（llama.cpp server HTTP 代理）、tool_bus（本地车控/传感工具 + 跨板工具注册表）、tts（SummerTTS 引擎 + 三端口握手；合成请求转 RK `rk/tts/tts_node` 板端合成、本板可听播报）、dashboard（PyQt5 插件化宿主，Jetson 桌面/RK 触摸屏双端部署）。
 - **编排与回归**：`start_core.sh` 路径无关、全 conf 驱动、按依赖排序启动 + 端口健康检查；`run_regression.sh` 4 条典型查询全链路验证。
 
 ### 工程化
