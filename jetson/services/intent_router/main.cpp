@@ -211,6 +211,28 @@ std::pair<std::string, std::string> match_nav(
     return {"", ""};
 }
 
+// ---------- VLM 画面问答（R15）：conf vlm.words 逗号分隔关键词 ----------
+// 命中即直通 vlm_service（抓行车记录仪最新帧 + Qwen2-VL 推理 + 恢复 llm），
+// 与 dashcam/nav 同级确定性路径，不进 LLM 工具环。
+bool match_vlm(const std::string& query, const std::vector<std::string>& words) {
+    for (const auto& w : words)
+        if (!w.empty() && query.find(w) != std::string::npos) return true;
+    return false;
+}
+
+std::vector<std::string> parse_vlm_words(const std::string& conf) {
+    std::vector<std::string> out;
+    std::string item;
+    std::istringstream iss(conf);
+    while (std::getline(iss, item, ',')) {
+        // 去空白
+        item.erase(0, item.find_first_not_of(" \t"));
+        item.erase(item.find_last_not_of(" \t") + 1);
+        if (!item.empty()) out.push_back(item);
+    }
+    return out;
+}
+
 // ---------- 下游请求构造 ----------
 
 nlohmann::json build_llm_request(const std::string& query, const std::string& rag_context,
@@ -285,6 +307,12 @@ int main() {
     zmq_component::ZmqClient rag_client(vox::config::connect_endpoint("port.rag", "6667"));
     zmq_component::ZmqClient llm_client(vox::config::connect_endpoint("port.llm", "6668"));
     zmq_component::ZmqClient tool_client(vox::config::connect_endpoint("port.tool_bus", "6669"));
+
+    // ── VLM 直通（R15）：含模型按需换出/恢复，整周期可达 1-2min，超时给足 ──
+    const auto vlm_words = parse_vlm_words(
+        vox::config::get("vlm.words", "画面,看到,拍到,路况,场景,周围"));
+    zmq_component::ZmqClient vlm_client(vox::config::connect_endpoint("vlm.port", "6721"));
+    vlm_client.setTimeout(240000);
 
     // ── 语义通路接线（E1 双路路由）：意图中心 + 查询编码 ──
     // 编码走 RAG 服务 embed 端点；每次请求新建 ZmqClient：REQ 状态机被超时破坏后
@@ -408,6 +436,31 @@ int main() {
                                  {"nav", nav_target}};
             server.send(reply.dump());
             send_tts_async(back);
+            continue;
+        }
+
+        // ── VLM 画面问答直通（R15）：抓帧看画面，Qwen2-VL 应答（llm 按需换出/恢复）──
+        // 放在 dashcam 直通前："看看录像画面"该看画面而非查录像状态。
+        if (match_vlm(text, vlm_words)) {
+            status_pub.publish(nlohmann::json{{"service", "router"},
+                                              {"status", "VLM -> snapshot -> Qwen2-VL -> TTS"}}
+                                   .dump());
+            VOX_INFO("[vlm-direct] %s", text.c_str());
+            std::string vlm_resp;
+            try {
+                vlm_resp = vlm_client.request(nlohmann::json{{"text", text}}.dump());
+            } catch (const std::exception& e) {
+                vlm_resp = nlohmann::json{{"ok", false}, {"err", e.what()}}.dump();
+            }
+            const nlohmann::json vj = jparse(vlm_resp);
+            std::string ans = vj.value("text", "");
+            if (!vj.value("ok", false) || ans.empty()) {
+                ans = "抱歉，画面分析暂时不可用（" + vj.value("err", std::string("无应答")) + "）";
+            }
+            VOX_INFO("[vlm ->] %.160s", ans.c_str());
+            nlohmann::json reply{{"found", true}, {"mode", "vlm"}, {"text", ans}};
+            server.send(reply.dump());
+            send_tts_async(ans);
             continue;
         }
 

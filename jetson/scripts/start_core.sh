@@ -14,6 +14,8 @@ RAG_LOG="/tmp/rag.log"
 TTS_LOG="/tmp/tts.log"
 TOOL_LOG="/tmp/tool_bus.log"
 ROUTER_LOG="/tmp/intent_router.log"
+VLM_LOG="/tmp/vlm_service.log"
+P_VLM=$(conf_get vlm.port)
 DASH_LOG="/tmp/dashboard.log"
 MEDIAMTX_LOG="/tmp/mediamtx.log"
 MEDIAMTX_DIR="$(cd "$JETSON_DIR/.." && pwd)/third_party/mediamtx"
@@ -58,7 +60,7 @@ kill_port() {
 }
 
 kill_existing() {
-    for p in "$P_ROUTER" "$P_RAG" "$P_LLM" "$P_TOOL" "$P_TTS" "$P_TTS_BLOCK" "$P_TTS_PUB" "$P_LLAMA"; do
+    for p in "$P_ROUTER" "$P_RAG" "$P_LLM" "$P_TOOL" "$P_TTS" "$P_TTS_BLOCK" "$P_TTS_PUB" "$P_LLAMA" "$P_VLM"; do
         kill_port "$p"
     done
     # -x 按进程名精确匹配，避免 -f 误伤自身命令行；mediamtx 二进制随 PATH，用 kill_port 即可
@@ -67,6 +69,7 @@ kill_existing() {
     pkill -9 -x intent_router 2>/dev/null || true
     pkill -9 -f '[l]lm_server.py' 2>/dev/null || true
     pkill -9 -f '[r]ag_server.py' 2>/dev/null || true
+    pkill -9 -f '[v]lm_service.py' 2>/dev/null || true
     pkill -9 -x tts_server 2>/dev/null || true
     pkill -9 -x tool_bus 2>/dev/null || true
     pkill -9 -x llama-server 2>/dev/null || true
@@ -160,6 +163,12 @@ start_router() {
     wait_for_port "$P_ROUTER" "intent_router"
 }
 
+start_vlm() {
+    # R15 画面问答：轻量常驻（模型按需拉起/换出），REP :vlm.port
+    nohup /usr/bin/python3 "$JETSON_DIR/services/vlm/vlm_service.py" >"$VLM_LOG" 2>&1 </dev/null &
+    wait_for_port "$P_VLM" "vlm_service"
+}
+
 start_dashboard() {
     nohup /usr/bin/python3 "$JETSON_DIR/dashboard/dashboard_ui.py" >"$DASH_LOG" 2>&1 </dev/null &
     printf '[OK] dashboard started (log %s)\n' "$DASH_LOG"
@@ -169,9 +178,9 @@ print_status() {
     printf '\n[Ports]\n'
     ss -tlnp 2>/dev/null | grep -E "$P_ROUTER|$P_RAG|$P_LLM|$P_TOOL|$P_TTS|$P_LLAMA|$(conf_get mediamtx.rtmp_port)|$(conf_get mediamtx.rtsp_port)" || true
     printf '\n[Processes]\n'
-    pgrep -af 'llama-server|llm_server.py|rag_server.py|tts_server|tool_bus|intent_router|dashboard_ui|mediamtx' || true
+    pgrep -af 'llama-server|llm_server.py|rag_server.py|tts_server|tool_bus|intent_router|dashboard_ui|mediamtx|vlm_service' || true
     printf '\n[Logs]\n'
-    for f in llama llm rag tts tool_bus intent_router dashboard; do
+    for f in llama llm rag tts tool_bus intent_router dashboard vlm_service; do
         printf '%-10s /tmp/%s.log\n' "$f" "$f"
     done
 }
@@ -185,6 +194,7 @@ main() {
     start_tts || exit 1
     start_tool_bus || exit 1
     start_router || exit 1
+    start_vlm || true   # R15 画面问答（失败不阻塞主栈）
     [ "${VOX_START_DASHBOARD:-0}" = "1" ] && start_dashboard
     print_status
 }
