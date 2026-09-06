@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """voice_service — RK3588 ASR 推理服务（R14 线上部署件）
 
-ASR：PULL :voice.asr_pull(6711) 收 Jetson mic_stream 的 PCM（float32 16k mono）
+ASR 输入两路（2026-09-06 起）：
+  · 本板麦克风（默认）：PulseAudio parec 采集 16k s16le → 进程内喂数
+    （麦克风物理在 RK 板，conf voice.mic_source 指定 pulse 源，空=禁用）
+  · PULL :voice.asr_pull(6711)：外部注入（wav_push 验收工具 / Jetson mic_stream 保留通路）
      → kaldi-native-fbank（与 sherpa-onnx 同款前端）→ zipformer 流式编码（NPU core0）
      → transducer 贪心解码（decoder core1 + joiner core2）→ 能量 VAD 终点检测
      → REQ Jetson intent_router:6666 发文本 + REQ tts_block:6677 防回灌
-     （对外行为与原 Jetson sherpa-onnx-microphone 二进制一致，仅推理位置换到 RK NPU）
-TTS：由 rk/tts/tts_node（SummerTTS CPU 引擎，与参考工程同路线）接管，
-     REP :6720 协议不变——本文件在 R14 末期剥离了 matcha RKNN 试验路径
-     （声码器 vocos 输出 STFT 谱需主机 ISTFT，NPU 图不适用，详见 AGENTS.md §6）。
+TTS：由 rk/tts/tts_node（SummerTTS CPU 引擎）接管，REP :6720 协议。
 
 **RKNN 喂数铁律（R14 实测定案，见 AGENTS.md §6）**：
   4D 缓存输入必须 transpose(0,2,3,1) 后 contiguous 喂入；输出恒等读回；输入顺序按
   encoder_input_order.txt（RKNN 转换后按 dtype/名字重排，≠ ONNX 序）。
 """
 import os
+import queue
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -181,10 +183,33 @@ class AsrEngine:
 # 主循环
 # ---------------------------------------------------------------------------
 
+def mic_worker(source, q):
+    """本板麦克风采集：parec 16k s16le mono → 队列（断流自动重启子进程）"""
+    cmd = ["parec", "--format=s16le", "--rate=16000", "--channels=1",
+           "--device", source]
+    while not stop_flag:
+        try:
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            log("mic", "parec 不存在（pulseaudio-utils 未装），麦克风采集禁用")
+            return
+        log("mic", f"采集启动: {source}")
+        while not stop_flag:
+            data = p.stdout.read(1024)      # 512 样本 = 32ms
+            if not data:
+                break
+            q.put(np.frombuffer(data, "<i2").astype(np.float32) / 32768.0)
+        p.kill()
+        p.wait()
+        if not stop_flag:
+            log("mic", "采集断流，3s 后重启")
+            time.sleep(3)
+
+
 def asr_worker(ctx, engine):
     pull = ctx.socket(zmq.PULL)
     pull.bind(f"tcp://*:{conf('voice.asr_pull', '6711')}")
-    log("asr", f"PULL :{conf('voice.asr_pull', '6711')} 就绪，等 Jetson PCM")
 
     jhost = conf("jetson.ip", "192.168.137.190")
     router_ep = f"tcp://{jhost}:{conf('port.intent_router', '6666')}"
@@ -192,6 +217,14 @@ def asr_worker(ctx, engine):
     endpoint_sil = float(conf("voice.endpoint_sil_s", "0.7"))
     max_utt_s = float(conf("voice.max_utt_s", "30"))
     vad_rms = float(conf("voice.vad_rms", "0.006"))
+
+    # 本板麦克风（麦克风物理在 RK）：parec 线程喂数，与 PULL 注入共用解码通路
+    mic_q = queue.Queue(maxsize=64)   # 满即丢——采音永远优先于积压
+    mic_src = conf("voice.mic_source", "")
+    if mic_src:
+        threading.Thread(target=mic_worker, args=(mic_src, mic_q), daemon=True).start()
+        log("asr", f"麦克风源: {mic_src}")
+    log("asr", f"PULL :{conf('voice.asr_pull', '6711')} 就绪（外部注入通路）")
 
     def dispatch(text):
         """终点后转发（gate→router）。独立线程：router 含 LLM 可达秒级，不能阻塞采音循环"""
@@ -222,20 +255,25 @@ def asr_worker(ctx, engine):
     last_voice = time.time()
     while not stop_flag:
         # 超时也落到终点判定：流停推后（mic 断/尾静音）最后一utterance必须能出终点
-        pcm = None
+        now = time.time()
+        chunks = []
         try:
-            pull.setsockopt(zmq.RCVTIMEO, 200)
-            pcm = np.frombuffer(pull.recv(), dtype=np.float32)
+            pull.setsockopt(zmq.RCVTIMEO, 50)
+            chunks.append(np.frombuffer(pull.recv(), dtype=np.float32))
         except zmq.Again:
             pass
-        now = time.time()
-        if pcm is not None:
+        try:
+            while True:
+                chunks.append(mic_q.get_nowait())
+        except queue.Empty:
+            pass
+        for pcm in chunks:
             engine.accept_pcm(pcm)
             engine.decode_available()
             # 能量 VAD 定终点：不能按 token 输出间隔判静音——整词单 token 的语言
             # （英文 BPE）正常语音间隔可超 1s，会造成句中假终点+冷启动碎片
             if float(np.sqrt(np.mean(pcm * pcm))) > vad_rms:
-                last_voice = now
+                last_voice = time.time()
         voiced = len(engine.hyp) > 0
         if not voiced and now - utt_start > 15:  # 无人说话也重置，防缓冲无限增长
             engine.reset()
