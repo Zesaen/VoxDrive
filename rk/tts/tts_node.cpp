@@ -31,6 +31,9 @@
 
 namespace {
 
+std::string conf_get(const std::map<std::string, std::string> &kv, const std::string &k,
+                     const std::string &dft);  // 定义在本命名空间后部
+
 // 本板可听播放（音箱接在 RK USB 声卡；Jetson 侧 AudioPlayer 保留块门/时序语义，其输出不可听）
 const char *kPlayWav = "/tmp/vox_tts_play.wav";
 
