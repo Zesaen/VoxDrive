@@ -58,3 +58,13 @@ venv/
 .DS_Store
 Thumbs.db
 .tmp_assets/
+# PC 侧工作资产（模型/实验/参考仓库，均不入库；临时日志按 .tmp_*.log 删）
+.tmp_*/
+.tmp_*.json
+.tmp_*.txt
+# RKNN 转换工作资产（只入库脚本；校准集/轮子/源模型/参考输出为一次性资产）
+rknn_conv/calib*
+rknn_conv/wheels/
+rknn_conv/jetson_deps/
+rknn_conv/models/
+rknn_conv/*.npz
