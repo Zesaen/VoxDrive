@@ -14,6 +14,7 @@ TTS：由 rk/tts/tts_node（SummerTTS CPU 引擎）接管，REP :6720 协议。
   4D 缓存输入必须 transpose(0,2,3,1) 后 contiguous 喂入；输出恒等读回；输入顺序按
   encoder_input_order.txt（RKNN 转换后按 dtype/名字重排，≠ ONNX 序）。
 """
+import json
 import os
 import queue
 import signal
@@ -226,6 +227,18 @@ def asr_worker(ctx, engine):
         log("asr", f"麦克风源: {mic_src}")
     log("asr", f"PULL :{conf('voice.asr_pull', '6711')} 就绪（外部注入通路）")
 
+    # ── 播报期防回灌：音箱与麦克风是同一 USB 组合设备，播报声会被自家人脸识别 ──
+    # 订阅 router tts_say（开播静音）与 tts play_end（结束后 0.6s 解除）；
+    # play_end 丢失保护：静音超 30s 强制解除。静音期丢弃 PCM 并复位解码状态。
+    ev = ctx.socket(zmq.SUB)
+    ev.setsockopt_string(zmq.SUBSCRIBE, "")
+    ev.setsockopt(zmq.LINGER, 0)
+    ev.connect(f"tcp://{jhost}:{conf('port.intent_router_pub', '6671')}")
+    ev.connect(f"tcp://{jhost}:{conf('port.tts_play_end', '6678')}")
+    muted = False
+    muted_since = 0.0
+    unmute_at = 0.0
+
     def dispatch(text):
         """终点后转发（gate→router）。独立线程：router 含 LLM 可达秒级，不能阻塞采音循环"""
         try:
@@ -254,6 +267,28 @@ def asr_worker(ctx, engine):
     utt_start = time.time()
     last_voice = time.time()
     while not stop_flag:
+        # 播报事件驱动静音（防回灌）
+        while True:
+            try:
+                msg = ev.recv_string(zmq.NOBLOCK)
+            except zmq.Again:
+                break
+            now2 = time.time()
+            if '"tts_say"' in msg and not muted:
+                muted, muted_since = True, now2
+                engine.reset()
+                log("asr", "播报开始，识别静音")
+            elif '"play_end"' in msg and muted:
+                unmute_at = now2 + float(conf("voice.unmute_tail_s", "0.6"))
+                log("asr", "播报结束，%.1fs 后解除静音" % (unmute_at - now2))
+        if muted:
+            if unmute_at and time.time() >= unmute_at:
+                muted, unmute_at = False, 0.0
+                utt_start = last_voice = time.time()
+            elif time.time() - muted_since > 30:  # play_end 丢失保护
+                muted, unmute_at = False, 0.0
+                utt_start = last_voice = time.time()
+                log("asr", "静音超时强制解除（play_end 未到）")
         # 超时也落到终点判定：流停推后（mic 断/尾静音）最后一utterance必须能出终点
         now = time.time()
         chunks = []
@@ -267,6 +302,8 @@ def asr_worker(ctx, engine):
                 chunks.append(mic_q.get_nowait())
         except queue.Empty:
             pass
+        if muted:
+            continue   # 静音期整块丢弃（队列仍在排空，防积压穿透）
         for pcm in chunks:
             engine.accept_pcm(pcm)
             engine.decode_available()
