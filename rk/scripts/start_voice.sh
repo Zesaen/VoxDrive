@@ -5,7 +5,7 @@
 #   启动: nohup voice_service.py，日志 ~/voxdrive_voice.log，PID 落 /tmp/voxdrive_voice.pid
 #   依赖: rknnlite(已装 ~/.local) + kaldi-native-fbank + onnxruntime + jieba + pyzmq
 set -e
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOG="$HOME/voxdrive_voice.log"
 PIDFILE="/tmp/voxdrive_voice.pid"
 
